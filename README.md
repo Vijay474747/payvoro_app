@@ -306,3 +306,4 @@ pip install pytest httpx && pytest      # also the web routes
 - **Razorpay API:** all calls are in one small function in `core.py` (`rzp_request`). Check it against
   Razorpay's current docs before going live.
 - Not compiled in this workspace (no Android SDK here). Expect to fix small things on first build.
+# payvoro
