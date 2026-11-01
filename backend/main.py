@@ -19,6 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 import core
+import legal_pages
 from admin_page import ADMIN_HTML, HOME_HTML
 from core import AppError
 
@@ -118,12 +119,6 @@ class MerchantIn(BaseModel):
     months: int = Field(default=1, ge=1, le=36)
 
 
-class PlanPriceIn(BaseModel):
-    price: int = Field(ge=1, le=core.MAX_PRICE)
-    rzp_plan_id: Optional[str] = None      # empty = make a Razorpay plan automatically (needs API keys)
-    link: Optional[str] = None             # your rzp.io AutoPay link (only used without API keys)
-
-
 class MerchantUpdate(BaseModel):
     active: Optional[bool] = None
     extend_months: Optional[int] = Field(default=None, ge=1, le=36)
@@ -134,6 +129,39 @@ class MerchantUpdate(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HOME_HTML
+
+
+def _basic_plan():
+    """Live price of the only plan (the admin page can change it)."""
+    try:
+        p = core.get_plans()["basic"]
+        return int(p["price"]), str(p["per_day"])
+    except Exception:
+        p = core.PLANS["basic"]
+        return int(p["price"]), str(p["per_day"])
+
+
+# ---------- public policy pages (Razorpay checks these) ----------
+@app.get("/terms", response_class=HTMLResponse)
+def terms_page():
+    price, per_day = _basic_plan()
+    return legal_pages.terms_html(price, per_day, core.TRIAL_DAYS)
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+def privacy_page():
+    return legal_pages.privacy_html()
+
+
+@app.get("/refund", response_class=HTMLResponse)
+def refund_page():
+    price, per_day = _basic_plan()
+    return legal_pages.refund_html(price, per_day, core.TRIAL_DAYS)
+
+
+@app.get("/contact", response_class=HTMLResponse)
+def contact_page():
+    return legal_pages.contact_html()
 
 
 @app.get("/api/health")
@@ -180,9 +208,9 @@ def subscribe_manual(body: SubscribeIn, m=Depends(current_merchant)):
 
 
 @app.post("/api/payments")
-def add_payments(batch: PaymentBatch, m=Depends(current_merchant)):
-    inserted = core.record_payments(m["id"], [p.model_dump() for p in batch.payments])
-    return {"inserted": inserted, **{k: v for k, v in core.public_merchant(m).items() if k.startswith("plan") or k == "can_announce"}}
+def add_payments(m=Depends(current_merchant)):
+    """Old app versions send customer payments here. They are NOT stored any more (Razorpay review)."""
+    return {"inserted": 0, **{k: v for k, v in core.public_merchant(m).items() if k.startswith("plan") or k == "can_announce"}}
 
 
 # ---------- payments (Razorpay) ----------
@@ -220,12 +248,6 @@ def stats():
     return core.admin_stats()
 
 
-@app.put("/admin/plans/{plan_id}", dependencies=[Depends(admin_only)])
-def set_plan_price(plan_id: str, body: PlanPriceIn):
-    """Change a plan's monthly AutoPay amount (makes a new Razorpay plan when API keys are set)."""
-    return core.admin_set_plan(plan_id, body.price, body.rzp_plan_id, body.link)
-
-
 @app.get("/admin/merchants/{mid}/subscriptions", dependencies=[Depends(admin_only)])
 def merchant_subscriptions(mid: int):
     return core.admin_list_subscriptions(merchant_id=mid, limit=100)
@@ -247,9 +269,6 @@ def update_merchant(mid: int, body: MerchantUpdate):
     return {"ok": True}
 
 
-@app.get("/admin/merchants/{mid}/payments", dependencies=[Depends(admin_only)])
-def merchant_payments(mid: int, limit: int = 100):
-    return core.admin_merchant_payments(mid, limit)
 
 
 @app.get("/admin/subscriptions", dependencies=[Depends(admin_only)])

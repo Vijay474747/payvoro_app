@@ -70,9 +70,9 @@ details summary{cursor:pointer;font-weight:700;font-size:15px}details[open] summ
   <div class="card" style="margin-top:16px"><h2>Users by plan</h2><p class="sub">Tap a plan to filter the user list.</p>
    <div class="bar" id="bar"></div><div class="legend" id="legend"></div></div>
 
-  <div class="card"><h2>Plans &amp; AutoPay amount</h2>
-   <p class="sub">Change the monthly amount charged by UPI AutoPay. With Razorpay API keys, a new Razorpay plan is made for you.
-   New merchants pay the new amount. Merchants already on AutoPay keep their old amount.</p>
+  <div class="card"><h2>Plan</h2>
+   <p class="sub">One fixed plan. It can't be changed here. To change the price or AutoPay link, edit <code>PLANS</code> in
+   <code>backend/core.py</code> (or set <code>RAZORPAY_LINK_BASIC</code> on Vercel) and redeploy.</p>
    <div class="grid plans" id="plans"></div></div>
 
   <div class="two">
@@ -86,7 +86,7 @@ details summary{cursor:pointer;font-weight:700;font-size:15px}details[open] summ
     <input id="q" placeholder="Search shop, email, UPI, city" style="max-width:300px"></div>
    <div class="legend" id="filters" style="margin-bottom:8px"></div>
    <div class="wrap"><table><thead><tr><th>#</th><th>Shop</th><th>Email</th><th>Plan</th><th>AutoPay</th><th>Plan until</th>
-    <th>Today</th><th>Month</th><th>Last seen</th><th>Joined</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+    <th>Last seen</th><th>Joined</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 
   <div class="two">
    <div class="card wrap"><h2>Latest AutoPay &amp; payments</h2><p class="sub">Newest subscription requests from the app and Razorpay.</p>
@@ -96,7 +96,7 @@ details summary{cursor:pointer;font-weight:700;font-size:15px}details[open] summ
     <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(160px,1fr))">
      <input id="n" placeholder="Shop name"><input id="e" placeholder="Google email"><input id="p" placeholder="Phone (optional)">
      <input id="u" placeholder="UPI ID (optional)"><input id="c" placeholder="City">
-     <select id="pl"><option value="none">No plan (sets AutoPay in app)</option><option value="basic">Basic</option><option value="plus">Plus</option></select>
+     <select id="pl"><option value="none">No plan (sets AutoPay in app)</option><option value="basic">Basic</option></select>
      <input id="mo" type="number" value="1" min="1" max="36" title="Months (paid plans)"></div>
     <button id="addBtn" style="margin-top:10px">Add merchant</button></details></div>
   </div>
@@ -108,8 +108,8 @@ details summary{cursor:pointer;font-weight:700;font-size:15px}details[open] summ
 const $=id=>document.getElementById(id);
 const store={get(k){try{return localStorage.getItem(k)||''}catch(e){return ''}},set(k,v){try{v?localStorage.setItem(k,v):localStorage.removeItem(k)}catch(e){}}};
 let K=store.get('pvk'), D=null, filter='all';
-const COLORS={basic:'var(--basic)',plus:'var(--plus)',trial:'var(--trial)',expired:'var(--expired)',no_plan:'var(--none)',stopped:'var(--stopped)'};
-const LABEL={basic:'Basic',plus:'Plus',trial:'Free trial',expired:'Expired',no_plan:'No plan',stopped:'Stopped'};
+const COLORS={basic:'var(--basic)',trial:'var(--trial)',expired:'var(--expired)',no_plan:'var(--none)',stopped:'var(--stopped)'};
+const LABEL={basic:'Basic',trial:'Free trial',expired:'Expired',no_plan:'No plan',stopped:'Stopped'};
 const rs=n=>'₹'+Number(n||0).toLocaleString('en-IN',{maximumFractionDigits:0});
 const dt=t=>t?new Date(Number(t)).toLocaleString('en-IN',{dateStyle:'medium',timeStyle:'short'}):'—';
 const dd=t=>t?new Date(Number(t)).toLocaleDateString('en-IN',{dateStyle:'medium'}):'—';
@@ -136,12 +136,13 @@ async function load(){ if(!K){showLogin();return}
 function render(){const s=D.stats, st=s.setup;
  let b='';
  if(!st.database_ok)b+='<div class="banner bad">⚠ No database connected on Vercel. Data will be lost. Add Neon Postgres in Vercel → Storage, then redeploy.</div>';
+ if(st.legal_missing&&st.legal_missing.length)b+=`<div class="banner bad">⚠ Terms / Privacy / Refund pages are missing your contact details. Set on Vercel: ${st.legal_missing.join(', ')} – then Redeploy. Razorpay checks these pages.</div>`;
  if(st.dev_mode)b+='<div class="banner bad">⚠ PAYVORO_DEV=1 is on. Anyone can log in without Google. Turn it off on the live server.</div>';
  if(s.autopay_failed)b+=`<div class="banner warn">${s.autopay_failed} merchant(s) have a failed AutoPay charge (low balance or cancelled mandate).</div>`;
  $('banners').innerHTML=b;
- const T=[['Total users',s.total_users,`+${s.new_7_days} in 7 days`],['Paying',s.paying,'Basic + Plus'],['Free trial',s.by_status.trial,`${st.trial_days} days`],
+ const T=[['Total users',s.total_users,`+${s.new_7_days} in 7 days`],['Paying',s.paying,'Basic plan'],['Free trial',s.by_status.trial,`${st.trial_days} days`],
   ['AutoPay on',s.autopay_on,s.autopay_failed?`${s.autopay_failed} failed`:'all fine'],['Monthly income',rs(s.monthly_income),'from paying AutoPay'],
-  ['All shops today',rs(s.today_total),`${s.online} online now`]];
+  ['Online now',s.online,'last 30 minutes']];
  $('tiles').innerHTML=T.map(t=>`<div class="tile"><small>${t[0]}</small><b>${t[1]}</b><em>${esc(t[2])}</em></div>`).join('');
  const total=s.total_users||1, keys=Object.keys(LABEL);
  $('bar').innerHTML=keys.map(k=>s.by_status[k]?`<i title="${LABEL[k]}: ${s.by_status[k]}" style="width:${s.by_status[k]/total*100}%;background:${COLORS[k]}"></i>`:'').join('');
@@ -156,19 +157,13 @@ function render(){const s=D.stats, st=s.setup;
   <div class="kv"><span>Razorpay plan</span>${p.rzp_plan_id?`<code>${esc(p.rzp_plan_id)}</code>`:'<span class="warn">not set</span>'}
   <span>AutoPay link</span>${p.link?`<code>${esc(p.link)}</code>`:'<span class="warn">not set</span>'}
   <span>AutoPay on</span><b>${p.autopay_on}</b></div>
-  <div class="row"><input type="number" min="1" max="15000" id="price_${p.id}" value="${p.price}" style="max-width:110px" aria-label="Monthly amount">
-   <span class="sub" style="margin:0" id="pd_${p.id}">= ₹${esc(p.per_day)}/day</span></div>
-  <details style="margin-top:8px"><summary style="font-size:13px">Use my own Razorpay plan ID / AutoPay link</summary>
-   <div class="grid" style="margin-top:6px"><input id="rid_${p.id}" placeholder="plan_... (leave empty = automatic)" value="">
-   <input id="lnk_${p.id}" placeholder="https://rzp.io/... (only without API keys)" value="${esc(p.link)}"></div></details>
-  <button style="margin-top:10px" onclick="savePlan('${p.id}')">Save amount</button></div>`).join('');
- s.plans.forEach(p=>{const i=$('price_'+p.id);i.oninput=()=>{const v=+i.value;$('pd_'+p.id).textContent=v>0?`= ₹${(Math.round(v/30*10)/10).toString()}/day`:''}});
+  ${p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener" style="display:inline-block;margin-top:8px">Open AutoPay link ↗</a>`:''}</div>`).join('');
  const ck=(state,title,hint)=>`<div class="check"><span class="ic ${state}">${state==='y'?'✓':state==='w'?'!':'✕'}</span><div><b>${title}</b><br><small class="sub">${hint}</small></div></div>`;
  $('setup').innerHTML=
   ck(st.database==='postgres'?'y':(st.database_ok?'w':'n'),'Database: '+(st.database==='postgres'?'Neon Postgres':'SQLite file'),st.database==='postgres'?'Data is saved safely.':'Fine on your PC. On Vercel connect Neon Postgres.')+
   ck(st.razorpay_keys?(st.razorpay_mode==='live'?'y':'w'):'n','Razorpay API keys'+(st.razorpay_mode?` (${st.razorpay_mode} mode)`:''),st.razorpay_keys?'Server makes each merchant\'s AutoPay and plans.':'Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Vercel.')+
   ck(st.webhook_secret?'y':'n','Webhook secret',`Razorpay → Webhooks → add this URL with the same secret:<br><code>${esc(D.webhook_url)}</code> <button class="ghost" onclick="copyHook()">Copy</button>`)+
-  ck(s.plans.every(p=>p.rzp_plan_id||p.link)?'y':'n','Plan for every price',s.plans.every(p=>p.rzp_plan_id)?'All plans have a Razorpay plan ID.':'Press "Save amount" on each plan after adding API keys to make the Razorpay plans.')+
+  ck(s.plans.every(p=>p.rzp_plan_id||p.link)?'y':'n','AutoPay link or plan ID',s.plans.every(p=>p.rzp_plan_id||p.link)?'The Basic plan has an AutoPay link / Razorpay plan ID.':'Set RAZORPAY_LINK_BASIC (or RAZORPAY_PLAN_BASIC with API keys) on Vercel.')+
   ck(st.google_login?'y':'n','Google login','GOOGLE_WEB_CLIENT_ID '+(st.google_login?'is set.':'is missing.'))+
   ck(st.dev_mode?'n':'y','Test mode off',st.dev_mode?'PAYVORO_DEV=1 – turn it off before going live.':'Only real Google logins work.');
  $('pending').innerHTML=D.pending.length?D.pending.map(x=>`<tr><td>#${x.id}</td><td>${esc(x.name)||'<i>not set</i>'}<br><small>${esc(x.email)}</small></td>
@@ -191,18 +186,12 @@ function renderRows(){const q=$('q').value.trim().toLowerCase();
   <td>${esc(m.email)}<br><small>${esc(m.phone)}</small></td>
   <td><span class="badge b-${m.status}">${LABEL[m.status]}</span>${m.status==='trial'||m.status==='expired'?`<br><small>${esc(m.plan)}</small>`:''}</td>
   <td>${apText(m)}</td><td class="${m.plan_active?'ok':'bad'}">${m.plan_until?dd(m.plan_until):'—'}</td>
-  <td class="n">${rs(m.today_total)} <small>(${m.today_count})</small></td><td class="n">${rs(m.month_total)}</td>
   <td class="${m.online?'ok':''}">${ago(m.last_seen)}</td><td>${dd(m.created_at)}</td>
   <td><button class="alt" onclick="hist(${m.id})">History</button> <button class="alt" onclick="ext(${m.id})">+1 month</button>
-  <select onchange="setPlan(${m.id},this.value)" aria-label="Change plan"><option value="">plan…</option><option value="basic">Basic</option><option value="plus">Plus</option></select>
+  <select onchange="setPlan(${m.id},this.value)" aria-label="Change plan"><option value="">plan…</option><option value="basic">Basic</option></select>
   <button class="${m.active?'red':''}" onclick="tog(${m.id},${!m.active})">${m.active?'Stop':'Start'}</button></td></tr>`).join('')
-  :'<tr><td colspan="11" class="sub">No users here</td></tr>'}
+  :'<tr><td colspan="9" class="sub">No users here</td></tr>'}
 
-async function savePlan(id){const price=+$('price_'+id).value, rid=$('rid_'+id).value.trim(), lnk=$('lnk_'+id).value.trim();
- const p=D.stats.plans.find(x=>x.id===id);
- if(price!==p.price&&!confirm(`Change ${p.name} AutoPay from ${rs(p.price)} to ${rs(price)} per month?\nNew merchants pay the new amount.`))return;
- const r=await api('/admin/plans/'+id,{method:'PUT',body:JSON.stringify({price,rzp_plan_id:rid||null,link:lnk})});
- toast(r.warning||(r.created_rzp_plan?`Saved. New Razorpay plan ${r.created_rzp_plan}`:'Saved'));load()}
 function copyHook(){navigator.clipboard?.writeText(D.webhook_url).then(()=>toast('Webhook URL copied'),()=>toast(D.webhook_url))}
 async function ext(id){await api('/admin/merchants/'+id,{method:'PATCH',body:JSON.stringify({extend_months:1})});toast('Added 1 month');load()}
 async function setPlan(id,p){if(p){await api('/admin/merchants/'+id,{method:'PATCH',body:JSON.stringify({plan:p})});toast('Plan changed');load()}}
@@ -211,13 +200,11 @@ async function tog(id,a){if(!a&&!confirm('Stop this merchant? Their phones are l
 async function appr(id){if(confirm('Did you receive this payment in your Razorpay account?')){await api('/admin/subscriptions/'+id+'/approve',{method:'POST'});toast('Approved: +30 days');load()}}
 async function rej(id){await api('/admin/subscriptions/'+id+'/reject',{method:'POST'});load()}
 async function hist(id){const m=D.merchants.find(x=>x.id===id);
- const [subs,pays]=await Promise.all([api(`/admin/merchants/${id}/subscriptions`),api(`/admin/merchants/${id}/payments?limit=30`)]);
+ const subs=await api(`/admin/merchants/${id}/subscriptions`);
  $('dlgT').textContent=(m.name||m.email)+' – history';
  $('dlgB').innerHTML=`<h2>AutoPay &amp; plan payments</h2><div class="wrap"><table><thead><tr><th>#</th><th>Plan</th><th>₹</th><th>Way</th><th>Status</th><th>Razorpay</th><th>Asked</th><th>Paid</th></tr></thead><tbody>
  ${subs.length?subs.map(s=>`<tr><td>${s.id}</td><td>${esc(s.plan)}${s.trial?' <small>trial</small>':''}</td><td>${rs(s.amount)}</td><td>${esc(s.method)}</td><td>${stBadge(s.status)}</td>
  <td><small>${esc(s.provider_ref||s.payment_ref||'')}</small></td><td>${dt(s.created_at)}</td><td>${dt(s.paid_at)}</td></tr>`).join(''):'<tr><td colspan="8" class="sub">None</td></tr>'}
- </tbody></table></div><h2 style="margin-top:16px">Last customer payments</h2><div class="wrap"><table><thead><tr><th>When</th><th>₹</th><th>From</th><th>App</th><th>Check</th></tr></thead><tbody>
- ${pays.length?pays.map(p=>`<tr><td>${dt(p.ts)}</td><td class="n">${rs(p.amount)}</td><td>${esc(p.payer)}</td><td>${esc(p.app)}</td><td>${p.bank_confirmed?'✓✓ bank':'✓'}</td></tr>`).join(''):'<tr><td colspan="5" class="sub">None</td></tr>'}
  </tbody></table></div>`;$('dlg').showModal()}
 $('addBtn').onclick=async()=>{await api('/admin/merchants',{method:'POST',body:JSON.stringify({name:$('n').value,email:$('e').value,
  phone:$('p').value||null,upi_id:$('u').value||null,city:$('c').value,plan:$('pl').value,months:+$('mo').value||1})});
@@ -228,7 +215,7 @@ $('key').value=K; load().catch(()=>{}); setInterval(()=>{if(K&&!document.hidden&
 
 HOME_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Payvoro Sound Box</title>
-<meta name="description" content="Turn any Android phone into a UPI sound box. Voice alerts in Tamil, English and Hindi.">
+<meta name="description" content="Turn any Android phone into a UPI sound box. Voice alerts in Tamil and English.">
 <style>
 :root{--brand:#5b3fe8;--brand-d:#3a22b8;--ink:#16141f;--mute:#6b6880;--bg:#f6f5fb}
 *{box-sizing:border-box}body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
@@ -248,7 +235,11 @@ footer{text-align:center;color:var(--mute);font-size:13px;padding:20px}footer a{
 <div class="wrap"><div class="plans" id="plans"></div>
 <div class="steps"><h2>How it works</h2><ol><li>Install the Payvoro app and log in with Google.</li><li>Scan your shop's UPI QR sticker.</li>
 <li>Pick a plan and approve UPI AutoPay. The first days are free.</li><li>Every GPay, PhonePe, Paytm or BHIM payment is announced aloud.</li></ol></div></div>
-<footer>Payvoro · <a href="/admin">Admin</a></footer>
+<p style="max-width:900px;margin:0 auto;padding:0 16px;color:var(--mute);font-size:13px;text-align:center">Payvoro only reads payment
+notifications on your own phone and speaks the amount. It does not receive, hold or verify any money: customers pay you directly
+through your own UPI ID. Payvoro is not affiliated with Razorpay, Google, NPCI or any UPI app.</p>
+<footer><a href="/terms">Terms</a> · <a href="/privacy">Privacy</a> · <a href="/refund">Refund &amp; Cancellation</a> ·
+<a href="/contact">Contact</a> · <a href="/admin">Admin</a></footer>
 <script>
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 fetch('/api/plans').then(r=>r.json()).then(d=>{document.getElementById('plans').innerHTML=d.plans.map(p=>`<div class="plan"><h2>${esc(p.name)}</h2>

@@ -23,11 +23,11 @@ def test_full_flow():
 
     assert c.patch("/api/me", headers=H, json={"name": "Ravi Stores", "upi_id": "ravi@okaxis"}).json()["name"] == "Ravi Stores"
     plans = c.get("/api/plans").json()
-    assert [p["per_day"] for p in plans["plans"]] == ["1.8", "3.5"] and plans["trial_days"] == 3
+    assert [p["per_day"] for p in plans["plans"]] == ["1"] and plans["trial_days"] == 3
 
     now = main.core.now_ms()
     batch = {"payments": [{"amount": 500, "app": "gpay", "timestamp": now, "dedupe_key": "a"}]}
-    assert c.post("/api/payments", headers=H, json=batch).json()["inserted"] == 1
+    assert c.post("/api/payments", headers=H, json=batch).json()["inserted"] == 0   # not stored any more
 
     auto = c.post("/api/subscribe", headers=H, json={"plan": "basic"}).json()
     assert auto["method"] == "link" and auto["url"].startswith("https://rzp.io/")
@@ -50,15 +50,21 @@ def test_dashboard_and_plan_price():
     d = c.get("/admin/dashboard", headers=A).json()
     assert d["webhook_url"].endswith("/api/razorpay/webhook")
     assert d["stats"]["total_users"] == len(d["merchants"]) >= 1
-    assert {"basic", "plus", "trial", "expired", "no_plan", "stopped"} <= set(d["stats"]["by_status"])
+    assert {"basic", "trial", "expired", "no_plan", "stopped"} == set(d["stats"]["by_status"])
     m = d["merchants"][0]
     assert "google_sub" not in m and m["status"] in d["stats"]["by_status"]
     assert c.get(f"/admin/merchants/{m['id']}/subscriptions", headers=A).status_code == 200
 
-    # change AutoPay amount (no Razorpay keys in this test -> a link is needed)
-    r = c.put("/admin/plans/plus", headers=A, json={"price": 150, "link": "https://rzp.io/rzp/plus150"}).json()
-    assert r["plan"]["price"] == 150 and r["plan"]["per_day"] == "5" and not r["warning"]
-    assert {p["id"]: p for p in c.get("/api/plans").json()["plans"]}["plus"]["price"] == 150
-    assert c.put("/admin/plans/plus", headers=A, json={"price": 0}).status_code == 422
-    assert c.put("/admin/plans/gold", headers=A, json={"price": 10}).status_code == 400
-    c.put("/admin/plans/plus", headers=A, json={"price": 105, "link": "https://rzp.io/rzp/qTp7E5Ai"})
+    # the plan is fixed: no route to change it any more
+    assert c.put("/admin/plans/basic", headers=A, json={"price": 99}).status_code in (404, 405)
+    assert {p["id"]: p for p in c.get("/api/plans").json()["plans"]}["basic"]["price"] == 30
+    assert c.get(f"/admin/merchants/{m['id']}/payments", headers=A).status_code == 404   # customer payments not kept
+
+
+def test_policy_pages():
+    for path, words in (("/terms", "Terms of Service"), ("/privacy", "Privacy Policy"),
+                        ("/refund", "Refund"), ("/contact", "Grievance")):
+        r = c.get(path)
+        assert r.status_code == 200 and words in r.text
+    assert "₹30 per month" in c.get("/refund").text
+    assert 'href="/terms"' in c.get("/").text

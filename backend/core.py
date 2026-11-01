@@ -10,9 +10,9 @@ Settings (environment variables):
   TRIAL_DAYS=3            free days after the merchant sets UPI AutoPay (first plan only)
   GOOGLE_WEB_CLIENT_ID    Google Cloud -> OAuth client ID (Web application). Same value as in the app.
   RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET   Razorpay API keys (AutoPay made by the server, best)
-  RAZORPAY_PLAN_BASIC / RAZORPAY_PLAN_PLUS  Razorpay Subscription plan IDs (Rs 54 and Rs 105 monthly)
+  RAZORPAY_PLAN_BASIC     Razorpay Subscription plan ID (Rs 30 monthly)
   RAZORPAY_WEBHOOK_SECRET  webhook secret (https://YOUR_DOMAIN/api/razorpay/webhook)
-  RAZORPAY_LINK_BASIC / RAZORPAY_LINK_PLUS  your AutoPay links from the dashboard (used when API keys are not set;
+  RAZORPAY_LINK_BASIC     your AutoPay link from the dashboard (used when API keys are not set;
                           the merchant must use the same email as their Google login)
   RAZORPAY_ME_LINK        backup "pay by link" page (razorpay.me) - you approve these on the admin page
 """
@@ -34,6 +34,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 import database
+import legal_pages
 
 log = logging.getLogger("payvoro")
 
@@ -50,20 +51,14 @@ DAY_MS = 86_400_000
 # The app SHOWS the per-day price. Razorpay CHARGES the monthly price by UPI AutoPay.
 PLANS = {
     "basic": {
-        "id": "basic", "name": "Basic", "price": 54, "per_day": "1.8", "days": 30,
-        "features": ["Voice alert in Tamil (தமிழ்)", "All UPI apps + bank SMS", "Scan & show your shop QR", "30 days payment history"],
+        "id": "basic", "name": "Basic", "price": 30, "per_day": "1", "days": 30,
+        "features": ["Voice alert in Tamil (தமிழ்) or English", "All UPI apps + bank SMS",
+                     "Scan & show your shop QR", "30 days payment history (saved only on your phone)"],
         "flags": {"languages": ["ta", "en"], "say_name": False, "analytics": False, "history_days": 30},
         "rzp_plan_id": os.getenv("RAZORPAY_PLAN_BASIC", ""),
-        "link": os.getenv("RAZORPAY_LINK_BASIC", "https://rzp.io/rzp/yONA0V4T"),
+        "link": os.getenv("RAZORPAY_LINK_BASIC", "https://rzp.io/rzp/WO6mEyFr"),
     },
-    "plus": {
-        "id": "plus", "name": "Plus", "price": 105, "per_day": "3.5", "days": 30,
-        "features": ["Everything in Basic", "Says the customer's name", "Voice in Tamil, English & Hindi",
-                     "Full analytics & reports", "Unlimited history + cloud backup"],
-        "flags": {"languages": ["ta", "en", "hi"], "say_name": True, "analytics": True, "history_days": None},
-        "rzp_plan_id": os.getenv("RAZORPAY_PLAN_PLUS", ""),
-        "link": os.getenv("RAZORPAY_LINK_PLUS", "https://rzp.io/rzp/qTp7E5Ai"),
-    },
+    # The Plus plan was removed (Razorpay review). Old "plus" accounts are treated as Basic.
 }
 PUBLIC_PLAN_KEYS = ("id", "name", "price", "per_day", "days", "features", "flags")
 
@@ -72,30 +67,16 @@ MAX_PRICE = 15000          # UPI AutoPay limit without extra approval (Rs)
 
 
 def per_day_text(price: int) -> str:
-    """54 -> '1.8', 105 -> '3.5', 60 -> '2'"""
+    """30 -> '1', 60 -> '2', 54 -> '1.8'"""
     t = f"{price / 30:.1f}"
     return t[:-2] if t.endswith(".0") else t
 
 
 def get_plans(c=None) -> dict:
-    """Plans from the code (PLANS) + prices you changed on the admin page (plan_settings table)."""
-    plans = copy.deepcopy(PLANS)
-    if c is None:
-        with db() as c2:
-            rows = c2.execute("SELECT * FROM plan_settings").fetchall()
-    else:
-        rows = c.execute("SELECT * FROM plan_settings").fetchall()
-    for r in rows:
-        p = plans.get(r["plan_id"])
-        if not p:
-            continue
-        p["price"] = int(r["price"])
-        p["per_day"] = per_day_text(p["price"])
-        if r["rzp_plan_id"] is not None:
-            p["rzp_plan_id"] = r["rzp_plan_id"]
-        if r["link"] is not None:
-            p["link"] = r["link"]
-    return plans
+    """The plan is FIXED in the code (PLANS above). The admin page only shows it; it can't change it.
+    To change the price or link: edit PLANS, or set RAZORPAY_LINK_BASIC / RAZORPAY_PLAN_BASIC on Vercel.
+    (Old prices saved in the plan_settings table are ignored.)"""
+    return copy.deepcopy(PLANS)
 
 
 def public_plans(c=None) -> list:
@@ -277,8 +258,7 @@ def _http_json(req: urllib.request.Request, timeout=15) -> dict:
 
 
 def plan_flags(plan: str) -> dict:
-    if plan == "trial":                      # old 7-day trial accounts
-        return PLANS["plus"]["flags"]
+    # Only one plan now. Old "trial" / "plus" accounts get the Basic features.
     return PLANS.get(plan, PLANS["basic"])["flags"]
 
 
@@ -310,8 +290,13 @@ def verify_google_token(id_token: str) -> dict:
     from google.oauth2 import id_token as gid
     from google.auth.transport import requests as greq
     try:
-        info = gid.verify_oauth2_token(id_token, greq.Request(), GOOGLE_CLIENT_ID)
-    except Exception:
+        # clock_skew: Vercel / phone clocks can be a few seconds off → "Token used too early"
+        info = gid.verify_oauth2_token(id_token, greq.Request(), GOOGLE_CLIENT_ID, clock_skew_in_seconds=30)
+    except Exception as e:
+        reason = str(e)
+        log.warning("Google token check failed: %s", reason)   # see it in Vercel → Logs
+        if "audience" in reason.lower():
+            raise AppError(401, "Server: GOOGLE_WEB_CLIENT_ID on the server is not the same as in the app.")
         raise AppError(401, "Google login could not be checked. Please try again.")
     if not info.get("email_verified"):
         raise AppError(401, "Your Google email is not verified")
@@ -388,48 +373,8 @@ def update_me(mid: int, name: Optional[str], upi_id: Optional[str]) -> dict:
         return public_merchant(c.execute("SELECT * FROM merchants WHERE id=?", (mid,)).fetchone())
 
 
-def record_payments(mid: int, payments: list) -> int:
-    """Saves new payments. A re-sent payment only updates its verification (late bank SMS)."""
-    inserted = 0
-    with db() as c:
-        for p in payments[:500]:
-            utr = (p.get("utr") or None)
-            source = "bank" if p.get("source") == "bank" else "app"
-            bank = 1 if p.get("bank_confirmed") else 0
-            key = str(p["dedupe_key"])[:200]
-            cur = c.execute(
-                "INSERT INTO payments(merchant_id, amount, payer, app, status, ts, dedupe_key, received_at,"
-                " utr, source, bank_confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?)"
-                " ON CONFLICT(merchant_id, dedupe_key) DO NOTHING",
-                (mid, float(p["amount"]), (p.get("payer") or "")[:60] or None, str(p.get("app", ""))[:40],
-                 str(p.get("status", "SUCCESS"))[:10], int(p["timestamp"]), key, now_ms(),
-                 utr[:20] if utr else None, source, bank),
-            )
-            if cur.rowcount:
-                inserted += 1
-            else:
-                c.execute(
-                    "UPDATE payments SET bank_confirmed = CASE WHEN bank_confirmed > ? THEN bank_confirmed ELSE ? END,"
-                    " utr = COALESCE(utr, ?), source = CASE WHEN ? = 'app' THEN 'app' ELSE source END,"
-                    " payer = COALESCE(payer, ?), app = CASE WHEN ? = 'app' THEN ? ELSE app END"
-                    " WHERE merchant_id = ? AND dedupe_key = ?",
-                    (bank, bank, utr, source, (p.get("payer") or None), source, str(p.get("app", ""))[:40], mid, key),
-                )
-    return inserted
-
-
-# ---------------- subscriptions (UPI AutoPay) ----------------
-#
-# Three ways a merchant can pay, best first:
-#   1. "autopay": the server makes a Razorpay Subscription for this merchant (needs API keys + plan IDs).
-#                 The app opens its page, the merchant approves UPI AutoPay. Webhooks do the rest.
-#   2. "link":    your ready-made AutoPay link (rzp.io). The merchant must use the same email as their
-#                 Google login, so the webhook can find them.
-#   3. "manual":  razorpay.me page, one month only. You approve it on the admin page.
-#
-# Free trial: the first plan only. The subscription starts TRIAL_DAYS later, so the first charge
-# comes after the free days. The trial begins when Razorpay says AutoPay is approved ("authenticated").
-
+# Customer payments are NOT sent to or stored on the server any more (Razorpay review).
+# They stay only on the merchant's phone. The old "payments" table is left empty.
 def razorpay_ready() -> bool:
     return bool(os.getenv("RAZORPAY_KEY_ID") and os.getenv("RAZORPAY_KEY_SECRET"))
 
@@ -672,7 +617,7 @@ def _start_of_month_ms() -> int:
 
 
 def merchant_status(d: dict, now: int) -> str:
-    """One word for the admin page: basic / plus / trial / expired / no_plan / stopped"""
+    """One word for the admin page: basic / trial / expired / no_plan / stopped"""
     if not d["active"]:
         return "stopped"
     if d["plan_until"] > now:
@@ -681,18 +626,13 @@ def merchant_status(d: dict, now: int) -> str:
 
 
 def admin_list_merchants() -> list:
-    day, month, now = _start_of_day_ms(), _start_of_month_ms(), now_ms()
+    # Customer payments are NOT stored on the server (Razorpay review), so no sales totals here.
+    now = now_ms()
     with db() as c:
         rows = c.execute(
             """
-            SELECT m.*,
-              COALESCE(SUM(CASE WHEN p.status='SUCCESS' AND p.ts >= ? THEN p.amount END), 0) AS today_total,
-              COALESCE(SUM(CASE WHEN p.status='SUCCESS' AND p.ts >= ? THEN 1 END), 0) AS today_count,
-              COALESCE(SUM(CASE WHEN p.status='SUCCESS' AND p.ts >= ? THEN p.amount END), 0) AS month_total
-            FROM merchants m LEFT JOIN payments p ON p.merchant_id = m.id
-            GROUP BY m.id ORDER BY m.id DESC
-            """,
-            (day, day, month),
+            SELECT m.* FROM merchants m ORDER BY m.id DESC
+            """
         ).fetchall()
         amounts = {r["provider_ref"]: int(r["amount"]) for r in c.execute(
             "SELECT s.provider_ref, s.amount FROM subscriptions s JOIN merchants m ON m.autopay_ref = s.provider_ref"
@@ -701,8 +641,6 @@ def admin_list_merchants() -> list:
     out = []
     for r in rows:
         d = dict(r)
-        d["today_total"], d["month_total"] = float(d["today_total"]), float(d["month_total"])
-        d["today_count"] = int(d["today_count"])
         d["plan_active"] = bool(d["active"]) and d["plan_until"] > now
         d["online"] = bool(d["last_seen"]) and now - d["last_seen"] < 30 * 60_000
         d["status"] = merchant_status(d, now)
@@ -718,10 +656,10 @@ def admin_stats(merchants: Optional[list] = None) -> dict:
     """Numbers for the top of the admin dashboard."""
     ms = merchants if merchants is not None else admin_list_merchants()
     now = now_ms()
-    by = {k: 0 for k in ("basic", "plus", "trial", "expired", "no_plan", "stopped")}
+    by = {k: 0 for k in ("basic", "trial", "expired", "no_plan", "stopped")}
     for m in ms:
         by[m["status"]] = by.get(m["status"], 0) + 1
-    paying = [m for m in ms if m["status"] in ("basic", "plus")]
+    paying = [m for m in ms if m["status"] == "basic"]
     plans = get_plans()
     plan_rows = []
     for k, p in plans.items():
@@ -741,7 +679,6 @@ def admin_stats(merchants: Optional[list] = None) -> dict:
         "online": sum(1 for m in ms if m["online"]),
         "new_7_days": sum(1 for m in ms if m["created_at"] > now - 7 * DAY_MS),
         "monthly_income": sum(m["autopay_amount"] for m in paying),
-        "today_total": sum(m["today_total"] for m in ms),
         "plans": plan_rows,
         "setup": setup_status(),
     }
@@ -759,72 +696,9 @@ def setup_status() -> dict:
         "dev_mode": DEV,
         "allow_signup": ALLOW_SIGNUP,
         "trial_days": TRIAL_DAYS,
+        # Contact details for /terms, /privacy, /refund (Razorpay checks these pages)
+        "legal_missing": legal_pages.missing_details(),
     }
-
-
-def admin_set_plan(plan_id: str, price: int, rzp_plan_id: Optional[str] = None, link: Optional[str] = None) -> dict:
-    """
-    Change the monthly AutoPay amount of a plan.
-    Razorpay plans can't change their amount, so with API keys a NEW Razorpay plan is made.
-    New merchants pay the new amount. Old AutoPays keep their old amount until they switch plan.
-    """
-    if plan_id not in PLANS:
-        raise AppError(400, "Unknown plan")
-    try:
-        price = int(price)
-    except (TypeError, ValueError):
-        raise AppError(400, "Price must be a whole number of rupees")
-    if not 1 <= price <= MAX_PRICE:
-        raise AppError(400, f"Price must be between 1 and {MAX_PRICE} rupees")
-    rzp_plan_id = (rzp_plan_id or "").strip() or None
-    link = (link or "").strip() if link is not None else None
-    if rzp_plan_id and not re.fullmatch(r"plan_[A-Za-z0-9]{6,40}", rzp_plan_id):
-        raise AppError(400, "Razorpay plan ID looks wrong (it starts with plan_)")
-    if link and not link.startswith("https://"):
-        raise AppError(400, "AutoPay link must start with https://")
-
-    with db() as c:
-        cur = get_plans(c)[plan_id]
-    changed = price != cur["price"]
-    created = None
-    if rzp_plan_id is None:
-        if razorpay_ready() and (changed or not cur["rzp_plan_id"]):
-            try:
-                r = rzp_request("POST", "/plans", {
-                    "period": "monthly", "interval": 1,
-                    "item": {"name": f"Payvoro {cur['name']}", "amount": price * 100, "currency": "INR",
-                             "description": f"Payvoro {cur['name']} - Rs {price} per month (Rs {per_day_text(price)}/day)"},
-                    "notes": {"payvoro_plan": plan_id},
-                })
-                rzp_plan_id = created = r["id"]
-            except Exception:
-                log.exception("razorpay plan create failed")
-                raise AppError(502, "Razorpay could not make the plan. Check your API keys and try again.")
-        elif changed:
-            rzp_plan_id = ""              # old Razorpay plan has the old amount: don't use it
-        else:
-            rzp_plan_id = cur["rzp_plan_id"]
-    if link is None:
-        link = "" if changed else cur["link"]     # old rzp.io link charges the old amount
-
-    now = now_ms()
-    with db() as c:
-        c.execute(
-            "INSERT INTO plan_settings(plan_id, price, rzp_plan_id, link, updated_at) VALUES (?,?,?,?,?)"
-            " ON CONFLICT(plan_id) DO UPDATE SET price=excluded.price, rzp_plan_id=excluded.rzp_plan_id,"
-            " link=excluded.link, updated_at=excluded.updated_at",
-            (plan_id, price, rzp_plan_id, link, now),
-        )
-        for pid, amount in ((cur["rzp_plan_id"], cur["price"]), (rzp_plan_id, price)):
-            if pid:
-                c.execute("INSERT INTO rzp_plans(rzp_plan_id, plan, amount, created_at) VALUES (?,?,?,?)"
-                          " ON CONFLICT(rzp_plan_id) DO NOTHING", (pid, plan_id, amount, now))
-        plan = get_plans(c)[plan_id]
-    warn = ""
-    if not plan["rzp_plan_id"] and not plan["link"]:
-        warn = "No Razorpay plan and no AutoPay link: merchants can't start AutoPay for this plan yet."
-    return {"plan": {k: plan[k] for k in ("id", "name", "price", "per_day", "rzp_plan_id", "link")},
-            "created_rzp_plan": created, "warning": warn}
 
 
 def admin_create_merchant(name: str, email: str, phone: Optional[str], upi_id: Optional[str], city: Optional[str],
@@ -834,7 +708,7 @@ def admin_create_merchant(name: str, email: str, phone: Optional[str], upi_id: O
     if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise AppError(400, "Enter the merchant's Google email")
     phone = normalize_phone(phone) if phone else None
-    if plan not in ("none", "basic", "plus"):
+    if plan not in ("none", "basic"):
         raise AppError(400, "Unknown plan")
     if upi_id and not valid_vpa(upi_id):
         raise AppError(400, "This UPI ID looks wrong")
@@ -890,10 +764,3 @@ def admin_reject_subscription(sub_id: int):
         c.execute("UPDATE subscriptions SET status='rejected' WHERE id=? AND status='pending'", (sub_id,))
 
 
-def admin_merchant_payments(mid: int, limit: int = 100) -> list:
-    with db() as c:
-        return [dict(r) for r in c.execute(
-            "SELECT amount, payer, app, status, ts, utr, source, bank_confirmed FROM payments"
-            " WHERE merchant_id=? ORDER BY ts DESC LIMIT ?",
-            (mid, min(limit, 1000)),
-        ).fetchall()]
