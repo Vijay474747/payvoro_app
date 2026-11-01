@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -147,18 +148,39 @@ fun StatusChip(ok: Boolean, text: String = if (ok) "Success" else "Failed") {
     )
 }
 
-/** How sure we are that this money really arrived. */
-fun verifyText(p: Payment): String = when {
-    p.source == "app" && p.bankConfirmed -> "✓✓ Bank confirmed"
-    p.source == "app" -> "✓ Verified by ${UpiApps.name(p.app)}"
-    else -> "✓ Bank SMS" + (p.utr?.let { " • Ref …${it.takeLast(4)}" } ?: "")
+/** Links to the public policy pages on the Payvoro server (Razorpay asks for these). */
+@Composable
+fun PolicyLinks(modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        Row { PolicyLink("Terms", "/terms"); PolicyLink("Privacy", "/privacy") }
+        Row { PolicyLink("Refund & Cancellation", "/refund"); PolicyLink("Contact", "/contact") }
+    }
+}
+
+@Composable
+private fun PolicyLink(label: String, path: String) {
+    val uri = LocalUriHandler.current
+    val base = com.payvoro.app.BuildConfig.SERVER_URL.trimEnd('/')
+    TextButton(
+        onClick = { runCatching { uri.openUri(base + path) } },
+        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)
+    ) { Text(label, fontSize = 12.sp) }
+}
+
+/**
+ * Where this alert came from. Payvoro does NOT verify payments (Razorpay review):
+ * it only reads the notification on this phone. Always check your bank app for confirmation.
+ */
+fun verifyText(p: Payment): String = when (p.source) {
+    "app" -> "Alert from ${UpiApps.name(p.app)}"
+    else -> "Alert from bank SMS"
 }
 
 @Composable
 fun VerifyBadge(p: Payment) {
     Text(
         verifyText(p),
-        color = if (p.bankConfirmed && p.source == "app") Green else PurpleDark,
+        color = PurpleDark,
         fontSize = 11.sp, fontWeight = FontWeight.SemiBold
     )
 }

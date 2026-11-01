@@ -13,8 +13,8 @@ import java.util.UUID
 
 /**
  * The "sound box": a short beep, then the amount spoken.
- *  - Basic: Tamil (default) or English.            "100 ரூபாய் பெறப்பட்டது"
- *  - Plus:  also Hindi, and the customer's name.   "ரமேஷ் அவர்களிடமிருந்து 100 ரூபாய் பெறப்பட்டது"
+ *  Tamil (default) or English. Only the amount is said.   "100 ரூபாய் பெறப்பட்டது"
+ *  (The Plus plan with Hindi and the customer's name was removed.)
  */
 class SoundAnnouncer(context: Context) : TextToSpeech.OnInitListener {
     private val ctx = context.applicationContext
@@ -55,12 +55,12 @@ class SoundAnnouncer(context: Context) : TextToSpeech.OnInitListener {
         return true
     }
 
-    /** Tamil and English for every plan. Hindi is a Plus feature (Basic falls back to Tamil). */
-    private fun lang() = prefs.language.let { if (it == "hi" && !prefs.isPlus()) "ta" else it }
+    /** Tamil or English. Old "hi" setting falls back to Tamil. */
+    private fun lang() = prefs.language.let { if (it == "hi") "ta" else it }
 
-    /** payer is said only on the Plus plan, and only if it is a real name. */
-    fun announce(amount: Double, payer: String? = null) =
-        speak(receivedText(amount, if (prefs.isPlus()) PayerName.clean(payer) else null))
+    /** Only the amount is spoken. [payer] is ignored (kept so old callers still compile). */
+    @Suppress("UNUSED_PARAMETER")
+    fun announce(amount: Double, payer: String? = null) = speak(receivedText(amount, null))
     fun announceFailed(amount: Double) = speak(failedText(amount))
     fun test() = announce(100.0, "Ramesh")
 

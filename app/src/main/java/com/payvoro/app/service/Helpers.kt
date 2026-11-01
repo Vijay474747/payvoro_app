@@ -25,8 +25,6 @@ import com.payvoro.app.ui.MainActivity
 import com.payvoro.app.ui.rupees
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
-import org.json.JSONObject
 
 object NotificationHelper {
     private const val CHANNEL = "payments"
@@ -63,37 +61,17 @@ object NotificationHelper {
     }
 }
 
-/** Sends saved payments to your Payvoro server (only amount, payer, app, time – never raw text). */
+/**
+ * Server sync. Customer payments are NOT sent to the server any more (Razorpay review):
+ * they stay only on this phone. This now only refreshes the merchant's plan from the server.
+ */
 object BackendSync {
     private val mutex = Mutex()
 
     suspend fun syncPending(ctx: Context): Boolean = mutex.withLock {
-        val prefs = Prefs(ctx)
-        if (!prefs.loggedIn) return false
-        val dao = AppDatabase.get(ctx).payments()
-        val list = dao.unsynced()
-        if (list.isEmpty()) return true
-        val arr = JSONArray()
-        list.forEach {
-            arr.put(JSONObject().apply {
-                put("amount", it.amount)
-                put("payer", it.payer ?: JSONObject.NULL)
-                put("app", it.app)
-                put("status", it.status)
-                put("timestamp", it.timestamp)
-                put("dedupe_key", it.dedupeKey)
-                put("utr", it.utr ?: JSONObject.NULL)
-                put("source", it.source)
-                put("bank_confirmed", it.bankConfirmed)
-            })
-        }
-        val reply = runCatching { Api.postPayments(ctx, JSONObject().put("payments", arr)) }.getOrNull()
-            ?: return false
-        dao.markSynced(list.map { it.id })
-        // The reply carries the latest plan, so renewals reach the phone quickly
-        if (reply.has("plan_until")) prefs.planUntil = reply.getLong("plan_until")
-        reply.optString("plan").takeIf { it.isNotBlank() }?.let { prefs.plan = it }
-        true
+        if (!Prefs(ctx).loggedIn) return false
+        // Only the plan is fetched (renewals reach the phone). No payment data leaves the phone.
+        Api.refreshMe(ctx).isSuccess
     }
 
     fun ping(ctx: Context): Boolean = Api.refreshMe(ctx).isSuccess

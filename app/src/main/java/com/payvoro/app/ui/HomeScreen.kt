@@ -88,9 +88,9 @@ fun HomeScreen(nav: NavController) {
                 prefs.planActive() && prefs.hasAutopay() ->
                     if (prefs.onTrial) "Free trial ends in ${days + 1} day(s). UPI AutoPay will pay your ${prefs.planLabel().substringBefore(" ·")} plan."
                     else "Your ${prefs.planLabel()} renews by UPI AutoPay in ${days + 1} day(s)."
-                prefs.planActive() -> "Your ${prefs.planLabel()} ends in ${days + 1} day(s). Tap to set UPI AutoPay – from ₹1.8/day."
-                prefs.canAnnounce() -> "Plan expired. Voice stops soon. Tap to renew – from ₹1.8/day."
-                else -> "Plan expired – payment voice is OFF. Tap to renew – from ₹1.8/day."
+                prefs.planActive() -> "Your ${prefs.planLabel()} ends in ${days + 1} day(s). Tap to set UPI AutoPay – from ₹1/day."
+                prefs.canAnnounce() -> "Plan expired. Voice stops soon. Tap to renew – from ₹1/day."
+                else -> "Plan expired – payment voice is OFF. Tap to renew – from ₹1/day."
             }
             Text(
                 msg, color = if (prefs.planActive()) PurpleDark else Red, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
@@ -120,7 +120,6 @@ fun HomeScreen(nav: NavController) {
                 QuickAction(Icons.Filled.Receipt, "Transaction History", Modifier.weight(1f)) { nav.goTab("history") }
                 QuickAction(Icons.Filled.QrCode2, "Generate QR Code", Modifier.weight(1f)) { nav.goTab("qr") }
                 QuickAction(Icons.Filled.Apps, "UPI Apps", Modifier.weight(1f)) { nav.navigate("apps") }
-                QuickAction(Icons.Filled.BarChart, "Analytics", Modifier.weight(1f)) { nav.goTab("analytics") }
             }
             // Plan upgrade (Test Sound is in Live Status ⚙ and in Profile → Sound Settings)
             Button(
@@ -132,7 +131,6 @@ fun HomeScreen(nav: NavController) {
                 Text(
                     when {
                         !prefs.canAnnounce() -> "  Renew Plan"
-                        prefs.plan == "basic" -> "  Upgrade to Plus – says customer name"
                         else -> "  My Plan"
                     }
                 )

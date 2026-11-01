@@ -43,7 +43,9 @@ fun nextRoute(ctx: android.content.Context): String {
     return when {
         !p.loggedIn -> "login"
         !p.shopReady -> "setup"
-        p.needsPlan -> "plans_first"
+        // SKIP_PLAN_PAGE = true → never show the first plan page.
+        // planSkipped = the merchant pressed "Skip for now" on it.
+        p.needsPlan && !p.planSkipped && !com.payvoro.app.BuildConfig.SKIP_PLAN_PAGE -> "plans_first"
         !Perms.listenerEnabled(ctx) -> "permissions"
         else -> "home"
     }

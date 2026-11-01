@@ -5,17 +5,42 @@ When a customer pays by GPay / PhonePe / Paytm / BHIM / bank UPI, the phone says
 **"500 ரூபாய் பெறப்பட்டது"** (Tamil, English or Hindi) and shows a big green screen.
 On the Plus plan it also says the customer's name.
 
+## What is new in v2.1 (Razorpay review)
+
+| # | Change |
+|---|---|
+| 1 | **Plus plan removed.** One plan: **Basic ₹1/day (₹30/month)**. Voice speaks only the amount, in Tamil or English. No customer name, no Hindi, no Analytics. History: last 30 days. |
+| 2 | **No "payment verification".** The "✓ Verified by GPay / Bank confirmed" badge is now "Alert from GPay / bank SMS". |
+| 3 | **No customer payments on the server ("cloud").** Payments stay only on the merchant's phone. The app no longer uploads them; `/api/payments` stores nothing; admin shows no sales totals. |
+| 4 | **Policy pages** on the server: `/terms`, `/privacy`, `/refund`, `/contact`. Linked from the home page, the login screen and the plan page. |
+| 5 | **Skip for now** button on the first plan page (voice stays off until a plan is chosen). |
+
+**Fill your contact details** (shown on the policy pages; Razorpay checks them) in Vercel → Settings → Environment Variables, then Redeploy:
+
+| Variable | Example |
+|---|---|
+| `PAYVORO_LEGAL_NAME` | your name / business name as on PAN |
+| `PAYVORO_SUPPORT_EMAIL` | support email |
+| `PAYVORO_SUPPORT_PHONE` | support phone |
+| `PAYVORO_ADDRESS` | full postal address |
+| `PAYVORO_JURISDICTION` | e.g. `Erode, Tamil Nadu` |
+| `PAYVORO_GRIEVANCE_NAME` | optional – grievance officer (default: legal name) |
+
+The admin page shows a red banner until all of these are set.
+
+**Old customer payments already on the server:** they are no longer shown or used. To delete them, run once in Neon → SQL Editor: `DELETE FROM payments;`
+
 ## What is new in v2.0 (same design and colours)
 
 | # | Change |
 |---|---|
 | 1 | **Google login.** Mobile number + OTP login is removed. |
-| 2 | **Prices shown per day:** Basic **₹1.8/day**, Plus **₹3.5/day**. Collected **monthly** by UPI AutoPay (₹54 / ₹105). **Free trial: 3 days** (first plan only). |
+| 2 | **Prices shown per day:** Basic **₹1/day**, Plus **₹2/day**. Collected **monthly** by UPI AutoPay (₹30 / ₹60). **Free trial: 3 days** (first plan only). |
 | 3 | **Basic speaks Tamil** ("100 ரூபாய் பெறப்பட்டது"). **Plus also says the customer's name** ("ரமேஷ் அவர்களிடமிருந்து 100 ரூபாய் பெறப்பட்டது") when the UPI app shows a name. |
 | 4 | **Profile:** shop name and UPI ID are saved and shown as a card, with an **Edit** button below. Changing the UPI ID asks "Are you sure?". |
 | 5 | **Home:** "Test Sound Box" replaced by an **Upgrade Plan** button. Test Sound is in ⚙ Live Status and Profile → Sound Settings. |
 | 6 | **Flow:** Google login → shop setup (scan QR) → choose plan + **UPI AutoPay** → Home. Home opens only after AutoPay is set. |
-| 7 | **Razorpay UPI AutoPay** (subscriptions). Your links `rzp.io/rzp/yONA0V4T` (Basic) and `rzp.io/rzp/qTp7E5Ai` (Plus) are used. `razorpay.me/@payvoro_sound_box_app` stays as a backup "pay 1 month by link". |
+| 7 | **Razorpay UPI AutoPay** (subscriptions). Basic AutoPay link: `rzp.io/rzp/WO6mEyFr` (₹30/month). (Plus was removed in v2.1.) `razorpay.me/@payvoro_sound_box_app` stays as a backup "pay 1 month by link". |
 
 No hardware. No new bank account. The merchant keeps their existing UPI QR.
 
@@ -73,9 +98,9 @@ Do **not** set `PAYVORO_DEV` on Vercel. Then **Deployments → ⋯ → Redeploy*
 
 **5. Open the admin dashboard:** `https://YOUR-PROJECT.vercel.app/admin` → log in with `PAYVORO_ADMIN_KEY`.
 
-**6. Set the AutoPay amount.** In **Plans & AutoPay amount**, type the monthly price for Basic and Plus and press
-**Save amount**. With API keys, the server makes a Razorpay plan (`plan_…`) for that amount.
-Do this once for each plan even if you keep ₹54 / ₹105, so both plans get a Razorpay plan ID.
+**6. The plan is fixed (Basic ₹30/month).** The admin page only shows it. The AutoPay link
+`rzp.io/rzp/WO6mEyFr` is set in `backend/core.py` (`PLANS`). To use a different link, set `RAZORPAY_LINK_BASIC`
+on Vercel. With API keys, make a ₹30 monthly plan in Razorpay → Subscriptions → Plans and set `RAZORPAY_PLAN_BASIC`.
 
 **7. Add the Razorpay webhook.** Razorpay Dashboard → **Webhooks → Add New Webhook**:
 URL = the one shown on the admin page (`https://YOUR-PROJECT.vercel.app/api/razorpay/webhook`, has a Copy button),
@@ -84,8 +109,8 @@ Secret = `RAZORPAY_WEBHOOK_SECRET`, events = all `subscription.*` events listed 
 **8. Point the app at Vercel.** `app/build.gradle.kts` → release `SERVER_URL` = your Vercel URL,
 `DEMO_MODE` = `"false"` → build the release APK.
 
-**9. Test with Razorpay test keys first**, then switch to `rzp_live_…` keys, press **Save amount** again
-(live mode needs its own plans), and update the webhook in live mode.
+**9. Test with Razorpay test keys first**, then switch to `rzp_live_…` keys, set the live
+`RAZORPAY_PLAN_BASIC` (live mode needs its own plan), and update the webhook in live mode.
 
 **Already have a `payvoro.db` from an old server?** Copy it into Neon once:
 `DATABASE_URL="<Neon URL>" python migrate_sqlite_to_postgres.py payvoro.db`
@@ -101,6 +126,33 @@ Secret = `RAZORPAY_WEBHOOK_SECRET`, events = all `subscription.*` events listed 
 - **Users list:** search, plan, AutoPay status and amount, plan end date, sales, last seen,
   History (AutoPay + customer payments), +1 month, change plan, Stop/Start.
 - Pay-by-link approvals, latest AutoPay activity, Add merchant.
+
+## Google login with Firebase (step by step)
+
+The app uses Google's Credential Manager. Firebase is used only to make the Google keys.
+No Firebase code runs in the app.
+
+1. **Firebase Console** → Add project (or open yours) → **Add app → Android**.
+   Package name: `com.payvoro.app` (must match exactly).
+2. **Get the SHA-1.** Two ways:
+   - Android Studio Terminal: `./gradlew signingReport` → copy SHA-1 and SHA-256 (debug and release).
+   - Or open the app, tap **Continue with Google**. When it fails, it shows **This app's SHA-1** with a Copy button.
+     This is the key of the APK that is really installed. Use this one.
+3. Firebase → ⚙ **Project settings** → your Android app → **Add fingerprint** → paste SHA-1 (and SHA-256).
+   Add the debug key **and** the release key (`payvoro-release.jks`). A different key = a different SHA-1.
+4. Firebase → **Authentication → Sign-in method → Google → Enable** → pick a support email → Save.
+   (This makes the "Web client" OAuth ID.)
+5. Download a **fresh** `google-services.json` (after adding SHA-1) → put it in `payvoro/app/`.
+   The app reads the Web client ID from it by itself.
+6. **Server:** open `google-services.json` → find the `client_id` with `"client_type": 3` →
+   set it as `GOOGLE_WEB_CLIENT_ID` on Vercel → Redeploy.
+7. `app/build.gradle.kts` → `DEMO_MODE` = `"false"`.
+8. Uninstall the old app → build → install → test.
+9. Google Cloud Console (same project) → **OAuth consent screen**: if it is in **Testing**, add your Gmail as a
+   test user, or press **Publish app**.
+
+**Still failing?** Android Studio → Logcat → filter `PayvoroGoogle`. It prints the client ID, package,
+SHA-1 and the real Google error.
 
 ## Build the app
 
@@ -163,7 +215,7 @@ Splash → Google login → Setup (shop name + scan QR) → Plans (UPI AutoPay) 
   details are kept. Amount QR is built on top of it.
 - **Plans** (Profile → My Plan, or the Home banner):
 
-| | Basic ₹1.8/day (₹54/month) | Plus ₹3.5/day (₹105/month) |
+| | Basic ₹1/day (₹30/month) | Plus ₹2/day (₹60/month) |
 |---|---|---|
 | Voice alerts | தமிழ் or English | தமிழ், English, हिंदी |
 | Says the customer's name | – | ✓ |
@@ -222,9 +274,9 @@ In test mode the login token `dev:someone@gmail.com` works without Google (for t
 | `PAYVORO_ADMIN_KEY` | Password for the admin page |
 | `GOOGLE_WEB_CLIENT_ID` | Google login (same value as in the app – see below) |
 | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` | Razorpay API keys (best: AutoPay made for each merchant, no email typing) |
-| `RAZORPAY_PLAN_BASIC`, `RAZORPAY_PLAN_PLUS` | Razorpay plan IDs (`plan_...`) for ₹54 and ₹105 monthly |
+| `RAZORPAY_PLAN_BASIC`, `RAZORPAY_PLAN_PLUS` | Razorpay plan IDs (`plan_...`) for ₹30 and ₹60 monthly |
 | `RAZORPAY_WEBHOOK_SECRET` | Webhook secret (see below) |
-| `RAZORPAY_LINK_BASIC`, `RAZORPAY_LINK_PLUS` | Your AutoPay links. Default: `rzp.io/rzp/yONA0V4T` and `rzp.io/rzp/qTp7E5Ai` |
+| `RAZORPAY_LINK_BASIC` | Your Basic AutoPay link. Default: `rzp.io/rzp/WO6mEyFr` |
 | `RAZORPAY_ME_LINK` | Backup pay-by-link page. Default: `razorpay.me/@payvoro_sound_box_app` |
 | `ALLOW_SIGNUP=0` | Only Google emails you added in admin can log in |
 | `TRIAL_DAYS` | Free trial length (default 3) |
@@ -243,9 +295,23 @@ plans are kept; phone number becomes optional).
    `keytool -list -v -keystore payvoro-release.jks -alias payvoro` (also add the debug key's SHA-1 for testing:
    `keytool -list -v -keystore ~/.android/debug.keystore -storepass android`).
 
+### Google login says "Login cancelled" / "Google blocked this app"
+
+This almost never means the user pressed back. Google refused the app because the setup does not match the APK.
+
+1. Tap **Continue with Google**. If it fails, the app now shows **this APK's SHA-1** with a Copy button.
+2. Google Cloud → **Credentials → Android OAuth client** (package `com.payvoro.app`) → that SHA-1 must be listed.
+   Each key has its own SHA-1: debug key, your release key, and Play Store's "App signing key" (Play Console → App integrity). Add every one you use.
+3. `GOOGLE_WEB_CLIENT_ID` in `app/build.gradle.kts` must be the **Web application** client ID (not the Android one), from the **same** Google Cloud project. Same value on Vercel.
+4. **OAuth consent screen**: if it is in "Testing", add your Gmail under **Test users** (or click Publish).
+5. `DEMO_MODE` must be `false` for real login.
+6. Changes in Google Cloud can take 5–10 minutes. Then try again.
+
+If the server says "not the same as in the app", the Vercel `GOOGLE_WEB_CLIENT_ID` does not match the app. Vercel → Logs shows the exact reason.
+
 ### Set up UPI AutoPay (Razorpay, once)
 
-1. Razorpay Dashboard → **Subscriptions → Plans**: make **Basic ₹54 monthly** and **Plus ₹105 monthly**.
+1. Razorpay Dashboard → **Subscriptions → Plans**: make **Basic ₹30 monthly** and **Plus ₹60 monthly**.
    Your AutoPay links should use these same plans. Put the plan IDs in `RAZORPAY_PLAN_BASIC/PLUS`.
 2. **Webhooks → Add** `https://YOUR_SERVER/api/razorpay/webhook` with a secret (= `RAZORPAY_WEBHOOK_SECRET`).
    Tick: `subscription.authenticated`, `subscription.activated`, `subscription.charged`,
@@ -267,7 +333,7 @@ If AutoPay fails (low balance), voice keeps working for 3 more days, then stops 
 - "Pay by link" payments waiting → Approve (+30 days) / Reject
 - Add merchant by **Google email** (they then just log in with that Google account)
 - Each shop: plan, trial, AutoPay status, today/month totals, last seen, plan expiry, +1 month, change plan, stop
-- Monthly income (active Basic × 54 + Plus × 105, trials not counted)
+- Monthly income (active Basic × 30 + Plus × 60, trials not counted)
 
 ### Tests
 
@@ -306,4 +372,3 @@ pip install pytest httpx && pytest      # also the web routes
 - **Razorpay API:** all calls are in one small function in `core.py` (`rzp_request`). Check it against
   Razorpay's current docs before going live.
 - Not compiled in this workspace (no Android SDK here). Expect to fix small things on first build.
-# payvoro

@@ -160,7 +160,7 @@ class PaymentListenerService : NotificationListenerService() {
         // Payment is always saved. Voice only while the plan (+3 grace days) is valid.
         if (prefs.canAnnounce()) {
             val announcer = (application as PayvoroApp).announcer
-            // Name only from UPI app alerts (bank SMS gives a UPI ID, not a name). Plus plan only – see SoundAnnouncer.
+            // Name only from UPI app alerts (bank SMS gives a UPI ID, not a name). Not spoken any more – see SoundAnnouncer.
             val payer = if (p.source == SOURCE_APP) p.payer else null
             if (p.status == SUCCESS) announcer.announce(p.amount, payer) else announcer.announceFailed(p.amount)
         }

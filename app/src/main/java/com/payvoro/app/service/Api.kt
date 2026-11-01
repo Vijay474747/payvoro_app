@@ -28,8 +28,7 @@ object Api {
     const val RAZORPAY_ME_LINK = "https://razorpay.me/@payvoro_sound_box_app"
 
     val defaultPlans = listOf(
-        Plan("basic", "Basic", 54, "1.8", listOf("Voice alert in Tamil (தமிழ்)", "All UPI apps + bank SMS", "Scan & show your shop QR", "30 days payment history")),
-        Plan("plus", "Plus", 105, "3.5", listOf("Everything in Basic", "Says the customer's name", "Voice in Tamil, English & Hindi", "Full analytics & reports", "Unlimited history + cloud backup")),
+        Plan("basic", "Basic", 30, "1", listOf("Voice alert in Tamil (தமிழ்) or English", "All UPI apps + bank SMS", "Scan & show your shop QR", "30 days payment history (saved only on your phone)")),
     )
 
     private fun call(method: String, path: String, body: JSONObject? = null, token: String? = null): JSONObject {
@@ -74,8 +73,8 @@ object Api {
         if (m.has("on_trial")) p.onTrial = m.optBoolean("on_trial")
         if (m.has("autopay_status")) p.autopayStatus = m.optString("autopay_status")
         if (m.has("needs_plan")) p.needsPlan = m.optBoolean("needs_plan")
-        // Hindi is a Plus feature. Basic speaks Tamil (or English if the merchant chose it).
-        if (!p.isPlus() && p.language == "hi") p.language = "ta"
+        // Only Tamil and English now (Hindi was in the removed Plus plan).
+        if (p.language == "hi") p.language = "ta"
     }
 
     // ---------------- DEMO MODE ----------------
@@ -159,7 +158,7 @@ object Api {
         p.onTrial = trial
         if (autopay) p.autopayStatus = if (trial) "authenticated" else "active"
         p.needsPlan = false
-        if (!p.isPlus() && p.language == "hi") p.language = "ta"
+        if (p.language == "hi") p.language = "ta"
         return PayRequest("demo", "", plan.price, 0, trial)
     }
 
@@ -167,8 +166,5 @@ object Api {
         if (!demo) runCatching { call("POST", "/api/auth/logout", JSONObject(), auth(ctx)) }
         Prefs(ctx).logout()
     }
-
-    /** Used by BackendSync. Returns the server reply (has plan info). Demo: nothing is sent. */
-    fun postPayments(ctx: Context, body: JSONObject): JSONObject =
-        if (demo) JSONObject() else call("POST", "/api/payments", body, auth(ctx))
+    // Customer payments are never sent to the server (Razorpay review). They stay on the phone.
 }

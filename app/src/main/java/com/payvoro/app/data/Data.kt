@@ -123,23 +123,23 @@ class Prefs(ctx: Context) {
     val shopReady: Boolean get() = upiId.isNotBlank() && sp.contains("merchant_name")
 
     // ---- plan (refreshed from the server) ----
-    var plan: String get() = str("plan", "none"); set(v) = put("plan", v)        // basic / plus (old: trial)
+    var plan: String get() = str("plan", "none"); set(v) = put("plan", v)        // basic (old: plus / trial)
     var planUntil: Long get() = sp.getLong("plan_until", 0); set(v) = sp.edit().putLong("plan_until", v).apply()
     var onTrial: Boolean get() = sp.getBoolean("on_trial", false); set(v) = putB("on_trial", v)
     /** Razorpay UPI AutoPay: "" (never) / authenticated / active / pending / halted / cancelled */
     var autopayStatus: String get() = str("autopay_status", ""); set(v) = put("autopay_status", v)
     /** True until the merchant sets AutoPay the first time. The app shows Plans before Home. */
     var needsPlan: Boolean get() = sp.getBoolean("needs_plan", planUntil == 0L); set(v) = putB("needs_plan", v)
+    /** The merchant pressed "Skip for now" on the first plan page. Don't show it again on app start. */
+    var planSkipped: Boolean get() = sp.getBoolean("plan_skipped", false); set(v) = putB("plan_skipped", v)
 
     fun planActive() = planUntil > System.currentTimeMillis()
     fun hasAutopay() = autopayStatus in setOf("authenticated", "active")
-    /** Plus = says the customer's name + Hindi + analytics. Old "trial" accounts keep Plus features. */
-    fun isPlus() = planActive() && plan in setOf("plus", "trial")
     /** Voice keeps working for 3 days after expiry, so the shop is not cut off suddenly. */
     fun canAnnounce() = planUntil + GRACE_MS > System.currentTimeMillis()
     fun daysLeft() = ((planUntil - System.currentTimeMillis()) / 86_400_000L).toInt()
     fun planLabel(): String {
-        val name = when (plan) { "trial" -> "Free Trial"; "basic" -> "Basic"; "plus" -> "Plus"; else -> "No plan" }
+        val name = when (plan) { "trial" -> "Free Trial"; "basic", "plus" -> "Basic"; else -> "No plan" }
         return if (onTrial && planActive() && plan != "trial") "$name · Free Trial" else name
     }
 
@@ -194,7 +194,7 @@ class Prefs(ctx: Context) {
     fun logout() = sp.edit().remove("token").apply().also {
         if (!com.payvoro.app.BuildConfig.DEMO_MODE) sp.edit()
             .remove("email").remove("phone").remove("plan").remove("plan_until").remove("on_trial")
-            .remove("autopay_status").remove("needs_plan").remove("merchant_name").remove("upi_id").remove("qr_raw")
+            .remove("autopay_status").remove("needs_plan").remove("plan_skipped").remove("merchant_name").remove("upi_id").remove("qr_raw")
             .apply()
     }
 

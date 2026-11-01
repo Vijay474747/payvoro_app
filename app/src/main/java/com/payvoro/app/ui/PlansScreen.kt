@@ -39,11 +39,11 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Plans: Basic ₹1.8/day and Plus ₹3.5/day, paid monthly by UPI AutoPay (₹54 / ₹105).
- * firstTime = right after setup. There is no back button; Home opens once AutoPay is set.
+ * One plan: Basic ₹1/day, paid monthly by UPI AutoPay (₹30). (Plus was removed.)
+ * firstTime = right after setup. No back button, but a "Skip for now" button ([onSkip]).
  */
 @Composable
-fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onActivated: () -> Unit) {
+fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onSkip: (() -> Unit)? = null, onActivated: () -> Unit) {
     val ctx = LocalContext.current
     val prefs = remember { Prefs(ctx) }
     val scope = rememberCoroutineScope()
@@ -179,7 +179,7 @@ fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onActivated: () -> Un
             Spacer(Modifier.height(8.dp))
             plans.forEach { p ->
                 val current = active && plan == p.id && autopay
-                val best = p.id == "plus"
+                val best = plans.size == 1   // only one plan: highlight it
                 Card(
                     Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     shape = RoundedCornerShape(18.dp),
@@ -189,7 +189,7 @@ fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onActivated: () -> Un
                     Column(Modifier.padding(18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(p.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                            if (best) StatusChip(true, "Most popular")
+                            if (best) StatusChip(true, "All features")
                         }
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text("₹${p.perDay}", fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = PurpleDark)
@@ -213,7 +213,6 @@ fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onActivated: () -> Un
                                 when {
                                     current -> "AutoPay is ON ✓"
                                     firstTime || prefs.planUntil == 0L -> "Start $TRIAL days free"
-                                    active && plan == "basic" && p.id == "plus" -> "Upgrade to Plus"
                                     active && plan != p.id -> "Switch to ${p.name}"
                                     else -> "Set UPI AutoPay"
                                 }
@@ -226,11 +225,25 @@ fun PlansScreen(firstTime: Boolean, onBack: (() -> Unit)?, onActivated: () -> Un
                     }
                 }
             }
+            if (onSkip != null) {
+                OutlinedButton(
+                    onClick = onSkip, enabled = busy == null,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp).height(48.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) { Text("Skip for now", fontSize = 15.sp) }
+                Text(
+                    "Without a plan, the payment voice stays OFF. You can choose a plan any time from Home.",
+                    color = TextGray, fontSize = 12.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                )
+            }
             Text(
-                "UPI AutoPay is by Razorpay. The first $TRIAL days are free (first plan only). " +
-                    "When you switch plan, the old AutoPay is stopped. Stop AutoPay any time from your UPI app.",
-                color = TextGray, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)
+                "The monthly fee is collected by UPI AutoPay through Razorpay. The first $TRIAL days are free " +
+                    "(first plan only). Cancel any time from your UPI app (AutoPay / Mandates) – no more charges after that. " +
+                    "Refunds follow our Refund & Cancellation Policy.",
+                color = TextGray, fontSize = 12.sp, modifier = Modifier.padding(top = 12.dp)
             )
+            PolicyLinks(Modifier.padding(bottom = 12.dp))
         }
     }
 

@@ -1,7 +1,12 @@
 package com.payvoro.app.ui
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -34,6 +39,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Compose's LocalContext can be a wrapper. Credential Manager needs the real Activity. */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
 /** First page: login with Google. */
 @Composable
 fun LoginScreen(onLoggedIn: () -> Unit) {
@@ -41,15 +53,26 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
     val scope = rememberCoroutineScope()
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var showSha1 by remember { mutableStateOf(false) }
+    val sha1 = remember { GoogleAuth.appSha1(ctx) }
+    val clipboard = LocalClipboardManager.current
 
     fun login() {
         if (loading) return
-        loading = true; error = null
+        loading = true; error = null; showSha1 = false
         scope.launch {
-            val token = if (Api.demo) Result.success("demo") else GoogleAuth.idToken(ctx as Activity)
+            val activity = ctx.findActivity()
+            val token = when {
+                Api.demo -> Result.success("demo")
+                activity == null -> Result.failure(Exception("Could not open Google login. Please restart the app."))
+                else -> GoogleAuth.idToken(activity)
+            }
             val r = token.mapCatching { t -> withContext(Dispatchers.IO) { Api.loginWithGoogle(ctx, t).getOrThrow() } }
             loading = false
-            r.onSuccess { onLoggedIn() }.onFailure { error = it.message }
+            r.onSuccess { onLoggedIn() }.onFailure {
+                error = it.message ?: "Login failed"
+                showSha1 = (it as? GoogleAuth.LoginError)?.showSha1 == true
+            }
         }
     }
 
@@ -88,9 +111,20 @@ fun LoginScreen(onLoggedIn: () -> Unit) {
                 }
             }
             error?.let { Text(it, color = Red, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+            if (showSha1) {
+                Column(
+                    Modifier.fillMaxWidth().padding(top = 10.dp)
+                        .background(PurpleLight, RoundedCornerShape(10.dp)).padding(10.dp)
+                ) {
+                    Text("This app's SHA-1 (add it in Firebase):", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                    SelectionContainer { Text(sha1, fontSize = 12.sp, color = PurpleDark, modifier = Modifier.padding(top = 4.dp)) }
+                    TextButton(onClick = { clipboard.setText(AnnotatedString(sha1)) }) { Text("Copy SHA-1") }
+                }
+            }
         }
         Spacer(Modifier.height(20.dp))
-        Text("By continuing you agree to Payvoro's Terms and Privacy Policy.", color = TextGray, fontSize = 11.sp, textAlign = TextAlign.Center)
+        Text("By continuing you agree to Payvoro's Terms of Service and Privacy Policy.", color = TextGray, fontSize = 11.sp, textAlign = TextAlign.Center)
+        PolicyLinks(Modifier.padding(top = 4.dp))
     }
 }
 

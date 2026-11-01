@@ -7,6 +7,14 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// Firebase: only used when app/google-services.json is present.
+// It also checks that the package name in that file is "com.payvoro.app" (build fails if not).
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    logger.warn("Payvoro: app/google-services.json not found – using GOOGLE_WEB_CLIENT_ID below.")
+}
+
 android {
     namespace = "com.payvoro.app"
     compileSdk = 34
@@ -20,10 +28,16 @@ android {
 
         // DEMO MODE: login works without Google and without the server.
         // Plans (with AutoPay) turn on instantly. Set to false when your server is live.
-        buildConfigField("Boolean", "DEMO_MODE", "true")
+        // ⚠ Must be "false" to test real Google login.
+        buildConfigField("Boolean", "DEMO_MODE", "false")
 
-        // Google login: Google Cloud Console -> Credentials -> OAuth client ID (type "Web application").
-        // Use the SAME value on the server (GOOGLE_WEB_CLIENT_ID). See README.
+        // "false" = show the "Choose plan" page after shop setup, with a "Skip for now" button.
+        // "true"  = never show it (plans open only from Home → Upgrade Plan).
+        buildConfigField("Boolean", "SKIP_PLAN_PAGE", "false")
+
+        // Google login: only needed if you do NOT use Firebase's google-services.json.
+        // With google-services.json the app takes the Web client ID from that file by itself.
+        // Use the SAME Web client ID on the server (GOOGLE_WEB_CLIENT_ID on Vercel). See README.
         buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"YOUR_WEB_CLIENT_ID.apps.googleusercontent.com\"")
     }
 
@@ -48,9 +62,9 @@ android {
 
     buildTypes {
         debug {
-            // 10.0.2.2 = your computer, seen from the Android emulator.
-            // On a real phone use your computer's Wi-Fi IP, e.g. http://192.168.1.5:8000
-            buildConfigField("String", "SERVER_URL", "\"http://10.0.2.2:8000\"")
+            // Debug builds also use the live Vercel server, so the Run button works on a real phone.
+            // (For a server on your own PC: "http://10.0.2.2:8000" on the emulator, or your Wi-Fi IP on a phone.)
+            buildConfigField("String", "SERVER_URL", "\"https://payvoro.vercel.app\"")
             manifestPlaceholders["cleartext"] = "true"
         }
         release {

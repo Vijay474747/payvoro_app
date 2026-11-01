@@ -58,7 +58,6 @@ fun ProfileScreen(nav: NavController) {
     var saving by remember { mutableStateOf(false) }
     var confirmUpi by remember { mutableStateOf(false) }
     var lang by remember { mutableStateOf(prefs.language) }
-    val plus = prefs.isPlus()
     var sound by remember { mutableStateOf(prefs.soundOn) }
 
     // Coming back from the QR scanner (Edit → scan): it saves the new UPI ID itself
@@ -168,23 +167,18 @@ fun ProfileScreen(nav: NavController) {
             }
             Text("Language", color = TextGray, fontSize = 12.sp)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                // Basic: Tamil or English. Plus: also Hindi, and the customer's name is said.
-                listOf("ta" to "தமிழ்", "en" to "English", "hi" to "हिंदी").forEach { (code, label) ->
+                // Tamil or English. Only the amount is said.
+                listOf("ta" to "தமிழ்", "en" to "English").forEach { (code, label) ->
                     FilterChip(selected = lang == code, onClick = {
-                        if (code == "hi" && !plus) {
-                            Toast.makeText(ctx, "$label voice is in the Plus plan", Toast.LENGTH_SHORT).show()
-                            nav.navigate("plans"); return@FilterChip
-                        }
                         lang = code; prefs.language = code
                         if (!announcer.applyLanguage())
                             Toast.makeText(ctx, "Voice for $label not installed. Install it in phone Settings → Text-to-speech.", Toast.LENGTH_LONG).show()
                         announcer.test()
-                    }, label = { Text(if (code == "hi" && !plus) "$label 🔒" else label) })
+                    }, label = { Text(label) })
                 }
             }
             Text(
-                if (plus) "Plus: the customer's name is also said (when the UPI app shows it)."
-                else "Upgrade to Plus to hear the customer's name.",
+                "Only the amount is said, like \"100 ரூபாய் பெறப்பட்டது\".",
                 color = TextGray, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp)
             )
             OutlinedButton(onClick = { announcer.test() }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {

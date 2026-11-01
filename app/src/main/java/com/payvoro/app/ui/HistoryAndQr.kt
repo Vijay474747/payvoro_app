@@ -61,8 +61,8 @@ fun HistoryScreen(onUpgrade: () -> Unit) {
     val prefs = remember { Prefs(ctx) }
     val all by remember { AppDatabase.get(ctx).payments().all() }.collectAsState(initial = emptyList())
     var tab by remember { mutableIntStateOf(0) }
-    // Basic plan shows the last 30 days; Plus/trial shows everything
-    val cutoff = if (prefs.isPlus()) 0L else startOfDay() - 29 * DAY
+    // The plan shows the last 30 days (saved only on this phone)
+    val cutoff = startOfDay() - 29 * DAY
     val visible = all.filter { it.timestamp >= cutoff }
     val hidden = all.size - visible.size
     val list = when (tab) {
@@ -87,9 +87,8 @@ fun HistoryScreen(onUpgrade: () -> Unit) {
                 items(dayItems, key = { it.id }) { PaymentRow(it, showDate = false) }
             }
             if (hidden > 0) item {
-                TextButton(onClick = onUpgrade, modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-                    Text("$hidden older payments are saved. Upgrade to Plus to see them.")
-                }
+                Text("Only the last 30 days are shown.", color = TextGray, fontSize = 12.sp,
+                    textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(16.dp))
             }
         }
     }

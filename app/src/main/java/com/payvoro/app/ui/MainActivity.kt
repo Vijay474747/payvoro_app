@@ -40,7 +40,6 @@ private val tabs = listOf(
     Tab("home", "Home", Icons.Filled.Home),
     Tab("history", "History", Icons.Filled.History),
     Tab("qr", "My QR", Icons.Filled.QrCode2),
-    Tab("analytics", "Analytics", Icons.Filled.BarChart),
     Tab("profile", "Profile", Icons.Filled.Person),
 )
 
@@ -97,7 +96,13 @@ fun PayvoroRoot() {
             }
             // First plan: no back button. Home opens only after UPI AutoPay is set.
             composable("plans_first") {
-                PlansScreen(firstTime = true, onBack = null) {
+                PlansScreen(
+                    firstTime = true, onBack = null,
+                    onSkip = {
+                        Prefs(ctx).planSkipped = true
+                        nav.navigate(nextRoute(ctx)) { popUpTo("plans_first") { inclusive = true } }
+                    }
+                ) {
                     nav.navigate(nextRoute(ctx)) { popUpTo("plans_first") { inclusive = true } }
                 }
             }
@@ -107,7 +112,6 @@ fun PayvoroRoot() {
             composable("qr") { QrScreen { nav.navigate("scan") } }
             composable("scan") { QrScanScreen { nav.popBackStack() } }
             composable("plans") { PlansScreen(firstTime = false, onBack = { nav.popBackStack() }) { nav.popBackStack() } }
-            composable("analytics") { AnalyticsScreen { nav.navigate("plans") } }
             composable("profile") { ProfileScreen(nav) }
             composable("apps") { AppsScreen { nav.popBackStack() } }
             composable("status") { StatusScreen { nav.popBackStack() } }
