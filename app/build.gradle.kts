@@ -17,14 +17,14 @@ if (file("google-services.json").exists()) {
 
 android {
     namespace = "com.payvoro.app"
-    compileSdk = 34
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.payvoro.app"
         minSdk = 24          // Android 7.0 and newer – covers almost every phone in use
-        targetSdk = 34
-        versionCode = 2
-        versionName = "2.0.0"
+        targetSdk = 36
+        versionCode = 3
+        versionName = "1.0.2"
 
         // DEMO MODE: login works without Google and without the server.
         // Plans (with AutoPay) turn on instantly. Set to false when your server is live.

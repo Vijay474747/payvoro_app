@@ -134,7 +134,7 @@ fun AppBadge(app: String, size: Dp = 40.dp) {
         else -> Color(0xFF0F766E) to "₹"
     }
     Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
-        Text(label, color = Color.White, fontWeight = FontWeight.Bold)
+        Text(label, color = Color.White, fontWeight = FontWeight.Bold, fontSize = (size.value * 0.4f).sp)
     }
 }
 

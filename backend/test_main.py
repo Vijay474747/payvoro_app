@@ -68,3 +68,24 @@ def test_policy_pages():
         assert r.status_code == 200 and words in r.text
     assert "₹30 per month" in c.get("/refund").text
     assert 'href="/terms"' in c.get("/").text
+
+
+def test_admin_v42_routes():
+    page = c.get("/admin").text
+    assert "+1 month" not in page and "setPlan" not in page and "extend_months" not in page   # removed in v4.2
+    d = c.get("/admin/dashboard", headers=A).json()
+    assert "unmatched" in d and "autopay_sync" in d
+    mid = d["merchants"][0]["id"]
+    # no API keys in tests → the Razorpay check explains what to set
+    assert c.post("/admin/autopay/sync", headers=A).status_code == 503
+    assert c.post(f"/admin/merchants/{mid}/autopay-check", headers=A).status_code == 503
+    assert c.post(f"/admin/merchants/{mid}/cancel-autopay", headers=A, json={"reason": "test"}).status_code in (400, 503)
+    # the cron needs CRON_SECRET or the admin key
+    assert c.get("/api/cron/autopay-sync").status_code == 401
+    assert c.get("/api/cron/autopay-sync", headers=A).json() == {"skipped": "Razorpay API keys are not set"}
+    # old "+1 month" / plan fields are ignored by the server (only free days with a reason change the plan)
+    before = c.get(f"/admin/merchants/{mid}", headers=A).json()["merchant"]["plan_until"]
+    c.patch(f"/admin/merchants/{mid}", headers=A, json={"extend_months": 1, "plan": "basic"})
+    assert c.get(f"/admin/merchants/{mid}", headers=A).json()["merchant"]["plan_until"] == before
+    r = c.post(f"/admin/merchants/{mid}/free-days", headers=A, json={"days": 2, "reason": "test days"}).json()
+    assert r["merchant"]["plan_until"] > before

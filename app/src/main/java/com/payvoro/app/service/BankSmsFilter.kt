@@ -53,10 +53,12 @@ object BankSmsFilter {
     private val utrRx = Regex("""(?:utr|upi\s*ref(?:\s*no)?|ref(?:erence)?\s*(?:no|number|id)?|rrn|upi)\s*[:.\-#]?\s*(?:no\.?\s*)?(\d{12})(?!\d)""", RegexOption.IGNORE_CASE)
     private val any12Rx = Regex("""(?<!\d)(\d{12})(?!\d)""")
 
-    private val spamWords = listOf(
-        "http", "www.", "bit.ly", "click", "apply", "loan", "lottery", " won ", "winner", "prize", "kyc",
-        "cashback", "reward", "offer", "claim", "pre-approved", "preapproved", "otp", "will be credited",
-        "to be credited", "shall be credited", "request", "emi", "free",
+    // Whole words only, and never inside a UPI ID: "emi" in "hemitha@okaxis", "free" in "freedom.k@oksbi"
+    // used to drop real credits.
+    private val spamRx = Regex(
+        """https?://|www\.|bit\.ly|\b(?:click|apply|loans?|lottery|won|winner|prize|kyc|cashback|rewards?|offers?|claim|""" +
+            """pre-?approved|otp|request(?:ed)?|emis?|free)\b|\b(?:will|to|shall) be credited\b""",
+        RegexOption.IGNORE_CASE
     )
 
     /** UPI reference / UTR: 12 digits. Used to spot the same payment twice. */
@@ -65,8 +67,7 @@ object BankSmsFilter {
 
     fun parseCredit(text: String, accountLast4: String?): BankCredit? {
         val t = text.replace('\n', ' ').trim()
-        val lower = t.lowercase()
-        if (spamWords.any { it in lower }) return null
+        if (spamRx.containsMatchIn(vpaRx.replace(t, " "))) return null      // UPI IDs are removed before the spam check
         val credit = creditRx.find(t) ?: return null
         val debit = debitRx.find(t)
         if (debit != null && debit.range.first < credit.range.first) return null

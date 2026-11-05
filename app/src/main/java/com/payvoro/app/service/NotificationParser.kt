@@ -13,12 +13,19 @@ object NotificationParser {
 
     private val amountRx = Regex("""(?:₹|\brs\.?|\binr)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)""", RegexOption.IGNORE_CASE)
 
-    private val creditWords = listOf("paid you", "received", "credited", "sent you", "added to your")
-    // Outgoing money, ads and reminders – never announce these
-    private val outgoingWords = listOf("debited", "you paid", "paid to", "sent to", "you sent", "spent", "withdrawn")
-    private val ignoreWords = listOf("request", "reminder", "cashback", "offer", "reward", "otp", "bill due", "emi", "win ", "loan",
-        "will be credited", "to be credited", "refund", "scratch card", "http")
-    private val failWords = listOf("failed", "declined", "unsuccessful")
+    // Whole words only. Plain "contains" dropped real payments: "emi" inside "Hemitha" / "Premium",
+    // "otp" inside "Rotpa", "win" inside "Swinesh"…
+    private fun words(vararg w: String) = Regex(w.joinToString("|", prefix = "(?:", postfix = ")"), RegexOption.IGNORE_CASE)
+
+    private val creditWords = words("""\bpaid you\b""", """\breceived\b""", """\bcredited\b""", """\bsent you\b""", """\badded to your\b""")
+    // Outgoing money – never announce. "Paid to your bank account" / "Sent to your bank" are INCOMING (GPay, PhonePe).
+    private val outgoingWords = words("""\bdebited\b""", """\byou paid\b""", """\bpaid to (?!your\b)""", """\bsent to (?!your\b)""",
+        """\byou sent\b""", """\bspent\b""", """\bwithdrawn\b""")
+    // Ads, reminders, requests, refunds – never announce. (Prefix match for request/remind/offer/reward/refund.)
+    private val ignoreWords = words("""\brequest""", """\bremind""", """\bcashback""", """\boffers?\b""", """\breward""", """\botp\b""",
+        """\bbill due\b""", """\bemis?\b""", """\bwin\b""", """\bwon\b""", """\bloans?\b""", """\bwill be credited\b""",
+        """\bto be credited\b""", """\brefund""", """\bscratch card""", """https?://""")
+    private val failWords = words("""\bfailed\b""", """\bdeclined\b""", """\bunsuccessful\b""")
 
     private val payerRx = listOf(
         Regex("""^(.+?)\s+(?:has\s+)?(?:paid|sent)\s+you""", RegexOption.IGNORE_CASE),
@@ -27,14 +34,13 @@ object NotificationParser {
 
     fun parse(title: String, text: String): Parsed? {
         val full = "$title $text".replace('\n', ' ').trim()
-        val lower = full.lowercase()
         val amount = amountRx.find(full)?.groupValues?.get(1)?.replace(",", "")?.toDoubleOrNull() ?: return null
         if (amount <= 0) return null
-        if (outgoingWords.any { it in lower }) return null
-        if (ignoreWords.any { it in lower }) return null
+        if (outgoingWords.containsMatchIn(full)) return null
+        if (ignoreWords.containsMatchIn(full)) return null
 
-        val failed = failWords.any { it in lower }
-        if (!failed && creditWords.none { it in lower }) return null
+        val failed = failWords.containsMatchIn(full)
+        if (!failed && !creditWords.containsMatchIn(full)) return null
 
         // Look for the payer in the title first (cleanest), then in the body
         val payer = listOf(title.trim(), text.replace('\n', ' ').trim()).firstNotNullOfOrNull { part ->

@@ -18,7 +18,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.payvoro.app.AppState
-import com.payvoro.app.data.Payment
 import com.payvoro.app.data.Prefs
 import com.payvoro.app.service.Api
 import com.payvoro.app.service.BackendSync
@@ -31,6 +30,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent { PayvoroTheme { PayvoroRoot() } }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Android sometimes does not reconnect the listener after an app update or restart:
+        // access shows ON but no notification reaches Payvoro. Ask Android to reconnect it.
+        if (Perms.listenerEnabled(this) && !AppState.listenerConnected.value) Perms.rebindListener(this)
     }
 }
 
@@ -53,10 +59,6 @@ fun NavController.goTab(route: String) = navigate(route) {
 fun PayvoroRoot() {
     val nav = rememberNavController()
     val ctx = LocalContext.current
-    var alert by remember { mutableStateOf<Payment?>(null) }
-
-    // Big full-screen alert when a payment arrives while the app is open
-    LaunchedEffect(Unit) { AppState.events.collect { alert = it } }
     val route = nav.currentBackStackEntryAsState().value?.destination?.route
 
     // On app start: refresh plan + push payments saved while offline.
@@ -118,6 +120,4 @@ fun PayvoroRoot() {
             composable("permissions_again") { PermissionScreen { nav.popBackStack() } }
         }
     }
-
-    alert?.let { PaymentAlertDialog(it) { alert = null } }
 }

@@ -64,4 +64,17 @@ class BankSmsFilterTest {
     @Test fun noAccountMention() {
         assertNull(BankSmsFilter.parseCredit("Rs 500 credited. Thank you", null))
     }
+
+    // ---- v1.0.2: spam words must match whole words only ----
+    @Test fun payerVpaContainingSpamWord() {
+        val c = BankSmsFilter.parseCredit("Rs 10.00 credited to A/c XX1234 by hemitha@okaxis UPI Ref 629812345678", "1234")
+        assertNotNull(c)
+        assertNotNull(BankSmsFilter.parseCredit("Rs 300 credited to A/c XX1234 from premiumstore@ybl UPI Ref 629812345679", "1234"))
+        assertNotNull(BankSmsFilter.parseCredit("Rs 50 credited to A/c XX1234 by freedom.k@oksbi UPI Ref 629812345670", "1234"))
+    }
+    @Test fun stillBlocksSpam() {
+        assertNull(BankSmsFilter.parseCredit("Rs 5000 credited to A/c XX1234. Your EMI is due", "1234"))
+        assertNull(BankSmsFilter.parseCredit("Get FREE Rs 500 credited to A/c XX1234", null))
+        assertNull(BankSmsFilter.parseCredit("You won Rs 5000 credited to A/c XX1234", null))
+    }
 }

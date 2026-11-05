@@ -359,3 +359,297 @@ if __name__ == "__main__":
         t()
         print("PASS", t.__name__)
     print(f"All {len(tests)} tests passed")
+
+
+# ---------------- v4.1 admin features ----------------
+def test_admin_edit_notes_and_message():
+    mid, tok = new_shop("edit@gmail.com", "Edit Shop", "edit@okaxis")
+    d = core.admin_edit_merchant(mid, {"name": "Edit Stores", "city": "Erode", "notes": "Pays late", "message": "Please update the app"})
+    m = d["merchant"]
+    assert (m["name"], m["city"], m["notes"], m["message"]) == ("Edit Stores", "Erode", "Pays late", "Please update the app")
+    assert d["log"][0]["action"] == "edited" and "private notes" in d["log"][0]["detail"]
+    expect_error(lambda: core.admin_edit_merchant(mid, {"upi_id": "bad upi"}), 400)
+    expect_error(lambda: core.admin_edit_merchant(mid, {"email": "ravi@gmail.com"}), 409)    # someone else's
+    core.admin_edit_merchant(mid, {"message": ""})                                              # cleared
+    core.admin_set_notice("New version 1.0.2 is on Play Store")
+    with core.db() as c:
+        row = c.execute("SELECT * FROM merchants WHERE id=?", (mid,)).fetchone()
+    assert core.app_notice_for(row) == "New version 1.0.2 is on Play Store"
+    core.admin_edit_merchant(mid, {"message": "Hi"})
+    with core.db() as c:
+        row = c.execute("SELECT * FROM merchants WHERE id=?", (mid,)).fetchone()
+    assert core.app_notice_for(row) == "Hi\n\nNew version 1.0.2 is on Play Store"
+    core.admin_set_notice("")
+    assert core.get_notice() == ""
+
+
+def test_admin_free_days_end_plan_logout_delete():
+    mid, tok = new_shop("days@gmail.com", "Days Shop", "days@okaxis")
+    expect_error(lambda: core.admin_give_days(mid, 5, ""), 400)               # reason needed
+    expect_error(lambda: core.admin_give_days(mid, 500, "too many"), 400)
+    m = core.admin_give_days(mid, 7, "Shop opening offer")["merchant"]
+    assert m["status"] == "basic" and m["plan_until"] > core.now_ms() + 6 * DAY
+    assert me(mid)["can_announce"]
+    assert m["ending_soon"] is False
+    m = core.admin_end_plan(mid, "Asked to stop")["merchant"]
+    assert m["status"] == "expired" and not me(mid)["can_announce"]           # voice stops at once
+    assert core.admin_logout_devices(mid) == 1
+    expect_error(lambda: core.merchant_by_token(tok), 401)
+    acts = [l["action"] for l in core.admin_recent_log(10, mid)]
+    assert acts[:3] == ["logged_out", "plan_ended", "free_days"]
+    core.admin_delete_merchant(mid)                                           # never paid → can delete
+    assert all(x["id"] != mid for x in core.admin_list_merchants())
+    assert core.admin_recent_log(1)[0]["action"] == "deleted"
+
+
+def test_paid_merchant_cannot_be_deleted_and_charges_are_counted():
+    mid, _ = new_shop("charged@gmail.com", "Charge Shop", "charge@okaxis")
+    sid = core.create_manual_payment(mid, "basic")["request_id"]
+    assert core.activate_subscription(sid, "manual")
+    row = next(r for r in core.admin_list_merchants() if r["id"] == mid)
+    assert (row["paid_total"], row["paid_count"]) == (30, 1)
+    expect_error(lambda: core.admin_delete_merchant(mid), 409)
+    month = core.admin_charts()["income"][-1]["value"]
+    assert month >= 30 and len(core.admin_charts()["signups"]) == 30
+    assert core.admin_charts()["signups"][-1]["value"] >= 1
+
+
+def test_every_monthly_autopay_charge_is_counted_once():
+    use_api(True)
+    try:
+        mid, _ = new_shop("monthly@gmail.com", "Monthly Shop", "monthly@okaxis")
+        core.create_subscription(mid, "basic")
+        ref = ref_of(mid, "basic")
+        rsub = {"id": ref, "plan_id": "plan_B", "current_end": (core.now_ms() + 30 * DAY) // 1000}
+        hook("subscription.charged", rsub, payment={"id": "pay_1", "amount": 3000}, eid="ev_m1")
+        hook("subscription.charged", rsub, payment={"id": "pay_1", "amount": 3000}, eid="ev_m1b")  # same payment again
+        hook("subscription.charged", rsub, payment={"id": "pay_2", "amount": 3000}, eid="ev_m2")   # next month
+        row = next(r for r in core.admin_list_merchants() if r["id"] == mid)
+        assert (row["paid_total"], row["paid_count"]) == (60, 2)
+    finally:
+        use_api(False)
+
+
+def test_bulk_stop_start_and_stats():
+    a, ta = new_shop("bulk1@gmail.com", "Bulk One", "b1@okaxis")
+    b, tb = new_shop("bulk2@gmail.com", "Bulk Two", "b2@okaxis")
+    assert core.admin_bulk([a, b], "stop") == 2
+    assert {r["id"]: r["status"] for r in core.admin_list_merchants()}[a] == "stopped"
+    expect_error(lambda: core.merchant_by_token(tb), 401)
+    core.admin_bulk([a, b], "start")
+    assert {r["id"]: r["status"] for r in core.admin_list_merchants()}[b] != "stopped"
+    expect_error(lambda: core.admin_bulk([a], "delete"), 400)
+    s = core.admin_stats()
+    assert {"ending_soon", "active_today", "not_set_up"} <= set(s)
+
+
+# ---------------------------------------------------------------- v4.2: AutoPay check with Razorpay (no webhook)
+import urllib.parse  # noqa: E402
+
+import autopay_sync  # noqa: E402
+
+
+class FakeRazorpay:
+    """Razorpay's GET API for subscriptions, customers, invoices and payments."""
+
+    def __init__(self):
+        self.subs, self.customers, self.invoices, self.payments, self.calls = {}, {}, {}, {}, []
+
+    def add_sub(self, sid, status, created_s, customer=None, notes=None, paid=(), current_end=None, start_at=None):
+        self.subs[sid] = {"id": sid, "plan_id": "plan_B", "status": status, "created_at": created_s,
+                          "customer_id": customer, "notes": notes or {}, "paid_count": len(paid),
+                          "current_end": current_end, "start_at": start_at or created_s, "short_url": f"https://rzp.io/i/{sid}"}
+        self.invoices[sid] = [{"id": f"inv_{p}", "payment_id": p, "status": "paid", "amount_paid": 3000,
+                               "paid_at": created_s + i * 30 * 86400} for i, p in enumerate(paid)]
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path))
+        url = urllib.parse.urlparse(path)
+        q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
+        parts = url.path.strip("/").split("/")
+        if method == "POST" and parts == ["subscriptions"]:
+            sid = f"sub_made{len(self.subs) + 1}"
+            self.subs[sid] = {"id": sid, "plan_id": body["plan_id"], "status": "created", "created_at": core.now_ms() // 1000,
+                              "notes": body.get("notes") or {}, "paid_count": 0, "short_url": f"https://rzp.io/i/{sid}"}
+            self.invoices[sid] = []
+            return self.subs[sid]
+        if method == "POST" and len(parts) == 3 and parts[2] == "cancel":
+            self.subs[parts[1]]["status"] = "cancelled"
+            return self.subs[parts[1]]
+        if parts == ["subscriptions"]:
+            items = [s for s in self.subs.values() if s["created_at"] >= int(q.get("from", 0))
+                     and (not q.get("plan_id") or s["plan_id"] == q["plan_id"])]
+            items.sort(key=lambda s: -s["created_at"])
+            skip, count = int(q.get("skip", 0)), int(q.get("count", 10))
+            return {"items": items[skip:skip + count]}
+        if parts[0] == "subscriptions":
+            return self.subs[parts[1]]
+        if parts[0] == "customers":
+            return self.customers[parts[1]]
+        if parts[0] == "invoices":
+            return {"items": self.invoices.get(q["subscription_id"], [])}
+        if parts[0] == "payments":
+            return self.payments[parts[1]]
+        return {}
+
+
+def with_fake_razorpay(test):
+    def run():
+        fake = FakeRazorpay()
+        old = core.rzp_request
+        core.rzp_request = fake
+        use_api(True)
+        try:
+            test(fake)
+        finally:
+            core.rzp_request = old
+            use_api(False)
+    run.__name__ = test.__name__
+    return run
+
+
+def row_of(mid):
+    with core.db() as c:
+        return dict(c.execute("SELECT * FROM merchants WHERE id=?", (mid,)).fetchone())
+
+
+@with_fake_razorpay
+def test_sync_finds_link_autopay_by_customer_email(fake):
+    """Merchant set AutoPay on the rzp.io link, the webhook never came. The sync finds it by the customer's email."""
+    mid, _ = new_shop("sync1@gmail.com", "Sync One", "sync1@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.customers["cust_1"] = {"email": "SYNC1@gmail.com", "contact": "+919876500001"}
+    fake.add_sub("sub_s1", "authenticated", now_s - 60, customer="cust_1", start_at=now_s + 3 * 86400)
+    r = autopay_sync.sync()
+    assert r["matched_new"] >= 1                     # (errors = AutoPays from older tests the fake does not know)
+    m = me(mid)
+    assert m["autopay"] and m["autopay_status"] == "authenticated" and m["on_trial"] and m["can_announce"]
+    assert row_of(mid)["autopay_ref"] == "sub_s1" and row_of(mid)["autopay_checked_at"]
+    assert autopay_sync.last_sync()["matched_new"] >= 1
+    # running again changes nothing and adds no duplicate request
+    before = row_of(mid)
+    autopay_sync.sync()
+    after = row_of(mid)
+    assert (before["plan_until"], before["autopay_status"]) == (after["plan_until"], after["autopay_status"])
+    with core.db() as c:
+        assert c.execute("SELECT COUNT(*) FROM subscriptions WHERE provider_ref='sub_s1'").fetchone()[0] == 1
+
+
+@with_fake_razorpay
+def test_sync_matches_by_upi_id_when_email_differs(fake):
+    mid, _ = new_shop("sync2@gmail.com", "Sync Two", "sync2shop@okhdfcbank")
+    now_s = core.now_ms() // 1000
+    fake.customers["cust_2"] = {"email": "other.person@yahoo.com", "contact": ""}
+    fake.payments["pay_s2"] = {"id": "pay_s2", "email": "other.person@yahoo.com", "vpa": "SYNC2SHOP@okhdfcbank"}
+    fake.add_sub("sub_s2", "active", now_s - 120, customer="cust_2", paid=["pay_s2"], current_end=now_s + 30 * 86400)
+    autopay_sync.sync()
+    m = me(mid)
+    assert m["autopay_status"] == "active" and m["plan_active"] and not m["on_trial"]
+    assert m["plan_until"] == (now_s + 30 * 86400) * 1000
+    row = next(r for r in core.admin_list_merchants() if r["id"] == mid)
+    assert (row["paid_total"], row["paid_count"]) == (30, 1)
+
+
+@with_fake_razorpay
+def test_monthly_charges_counted_once_and_plan_extended(fake):
+    mid, _ = new_shop("sync3@gmail.com", "Sync Three", "sync3@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.add_sub("sub_s3", "active", now_s - 40 * 86400, notes={"email": "sync3@gmail.com"},
+                 paid=["pay_a", "pay_b"], current_end=now_s + 20 * 86400)
+    autopay_sync.sync(days=60)
+    autopay_sync.sync(days=60)
+    row = next(r for r in core.admin_list_merchants() if r["id"] == mid)
+    assert (row["paid_total"], row["paid_count"]) == (60, 2)
+    assert row["plan_until"] == (now_s + 20 * 86400) * 1000
+    # charge dates are Razorpay's, not "now" (for the income chart)
+    with core.db() as c:
+        times = sorted(r[0] for r in c.execute("SELECT paid_at FROM charges WHERE merchant_id=?", (mid,)).fetchall())
+    assert times[0] == (now_s - 40 * 86400) * 1000
+
+
+@with_fake_razorpay
+def test_failed_charge_shows_even_with_old_charges(fake):
+    mid, _ = new_shop("sync4@gmail.com", "Sync Four", "sync4@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.add_sub("sub_s4", "halted", now_s - 35 * 86400, notes={"email": "sync4@gmail.com"},
+                 paid=["pay_h1"], current_end=now_s - 5 * 86400)
+    autopay_sync.sync(days=60)
+    assert me(mid)["autopay_status"] == "halted"
+    assert next(r for r in core.admin_list_merchants() if r["id"] == mid)["paid_count"] == 1
+
+
+@with_fake_razorpay
+def test_old_autopay_never_replaces_new_one(fake):
+    mid, _ = new_shop("sync5@gmail.com", "Sync Five", "sync5@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.add_sub("sub_old5", "cancelled", now_s - 20 * 86400, notes={"email": "sync5@gmail.com"}, paid=["pay_o5"])
+    fake.add_sub("sub_new5", "active", now_s - 86400, notes={"email": "sync5@gmail.com"}, paid=["pay_n5"],
+                 current_end=now_s + 29 * 86400)
+    # the old one was known first (webhook long ago)
+    with core.db() as c:
+        c.insert("INSERT INTO subscriptions(merchant_id, plan, amount, method, provider_ref, created_at) VALUES (?,?,?,?,?,?)",
+                 (mid, "basic", 30, "link", "sub_old5", (now_s - 20 * 86400) * 1000))
+    autopay_sync.sync(days=60)
+    r = row_of(mid)
+    assert r["autopay_ref"] == "sub_new5" and r["autopay_status"] == "active"
+    assert fake.subs["sub_new5"]["status"] == "active"                 # the new one was not cancelled
+    assert next(x for x in core.admin_list_merchants() if x["id"] == mid)["paid_count"] == 2
+
+
+@with_fake_razorpay
+def test_unmatched_autopay_link_and_ignore(fake):
+    mid, _ = new_shop("sync6@gmail.com", "Sync Six", "sync6@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.customers["cust_x"] = {"email": "unknown.buyer@gmail.com", "contact": "9000000006"}
+    fake.add_sub("sub_x6", "authenticated", now_s - 30, customer="cust_x", start_at=now_s + 3 * 86400)
+    fake.add_sub("sub_y6", "active", now_s - 40, notes={"email": "nobody@nowhere.com"})
+    r = autopay_sync.sync()
+    assert r["unmatched"] >= 2
+    um = {u["rzp_sub_id"]: u for u in autopay_sync.list_unmatched()}
+    assert um["sub_x6"]["email"] == "unknown.buyer@gmail.com" and um["sub_x6"]["phone"] == "9000000006"
+    autopay_sync.link_unmatched("sub_x6", mid)
+    assert me(mid)["autopay_status"] == "authenticated" and me(mid)["on_trial"]
+    autopay_sync.ignore_unmatched("sub_y6")
+    left = {u["rzp_sub_id"] for u in autopay_sync.list_unmatched()}
+    assert "sub_x6" not in left and "sub_y6" not in left
+    autopay_sync.sync()                                                # ignored stays ignored
+    assert "sub_y6" not in {u["rzp_sub_id"] for u in autopay_sync.list_unmatched()}
+    other, _ = new_shop("sync6b@gmail.com", "Sync Six B", "sync6b@okaxis")
+    expect_error(lambda: autopay_sync.link_unmatched("sub_x6", other), 409)
+
+
+@with_fake_razorpay
+def test_app_open_checks_only_when_waiting_and_not_too_often(fake):
+    mid, tok = new_shop("sync7@gmail.com", "Sync Seven", "sync7@okaxis")
+    m = core.merchant_by_token(tok)
+    assert autopay_sync.maybe_autocheck(m)["autopay_status"] == ""
+    assert fake.calls == []                                            # not waiting for AutoPay → no Razorpay call
+    core.create_subscription(mid, "basic")                             # app opened the AutoPay page
+    now_s = core.now_ms() // 1000
+    fake.add_sub(ref_of(mid, "basic"), "authenticated", now_s, notes={"merchant_id": str(mid)}, start_at=now_s + 3 * 86400)
+    m = autopay_sync.maybe_autocheck(core.merchant_by_token(tok))
+    assert m["autopay_status"] == "authenticated"
+    n = len(fake.calls)
+    autopay_sync.maybe_autocheck(core.merchant_by_token(tok))          # again at once → no new call
+    assert len(fake.calls) == n
+
+
+@with_fake_razorpay
+def test_admin_cancels_autopay_and_bulk_check(fake):
+    mid, _ = new_shop("sync8@gmail.com", "Sync Eight", "sync8@okaxis")
+    now_s = core.now_ms() // 1000
+    fake.add_sub("sub_s8", "active", now_s - 100, notes={"email": "sync8@gmail.com"}, paid=["pay_s8"],
+                 current_end=now_s + 30 * 86400)
+    assert core.admin_bulk([mid], "autopay_check") == 1
+    assert me(mid)["autopay_status"] == "active"
+    expect_error(lambda: autopay_sync.cancel_merchant_autopay(mid, ""), 400)
+    d = autopay_sync.cancel_merchant_autopay(mid, "merchant asked")
+    assert d["merchant"]["autopay_status"] == "cancelled" and fake.subs["sub_s8"]["status"] == "cancelled"
+    assert me(mid)["plan_active"]                                      # paid days keep working
+    assert any(l["action"] == "autopay_cancelled" for l in d["log"])
+    expect_error(lambda: autopay_sync.cancel_merchant_autopay(mid, "again"), 400)
+
+
+def test_sync_needs_api_keys():
+    use_api(False)
+    expect_error(lambda: autopay_sync.sync(), 503)

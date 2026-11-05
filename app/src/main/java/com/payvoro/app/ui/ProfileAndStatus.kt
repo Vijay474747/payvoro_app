@@ -34,6 +34,9 @@ import com.payvoro.app.data.Prefs
 import com.payvoro.app.data.UpiApps
 import com.payvoro.app.service.Api
 import com.payvoro.app.service.BackendSync
+import com.payvoro.app.service.EventLog
+import com.payvoro.app.service.NotificationHelper
+import com.payvoro.app.service.PaymentPopup
 import com.payvoro.app.service.Perms
 import com.payvoro.app.service.UpiQrParser
 import androidx.compose.material.icons.automirrored.filled.Logout
@@ -245,6 +248,12 @@ fun StatusScreen(onBack: () -> Unit) {
     val listenerEnabled = remember(tick) { Perms.listenerEnabled(ctx) }
     val internet = remember(tick) { Perms.hasInternet(ctx) }
     val battery = remember(tick) { Perms.batteryIgnored(ctx) }
+    val overlay = remember(tick) { Perms.canOverlay(ctx) }
+    val notif = remember(tick) { Perms.notificationsAllowed(ctx) && androidx.core.app.NotificationManagerCompat.from(ctx).areNotificationsEnabled() }
+    val headsUp = remember(tick) { NotificationHelper.headsUpAllowed(ctx) }
+    val volumeZero = remember(tick) { Perms.mediaVolumeZero(ctx) }
+    val log by EventLog.lines.collectAsState()
+    LaunchedEffect(Unit) { EventLog.load(ctx) }
     var server by remember { mutableStateOf<Boolean?>(null) }
     LaunchedEffect(tick) {
         server = withContext(Dispatchers.IO) { BackendSync.ping(ctx) }
@@ -274,6 +283,19 @@ fun StatusScreen(onBack: () -> Unit) {
                 listenerEnabled)
             CheckRow(Icons.Filled.Wifi, "Internet Connection", if (internet) "Connected" else "Offline (payments still announced)", internet)
             CheckRow(Icons.AutoMirrored.Filled.VolumeUp, "Audio Engine", if (announcer.ready) "Ready" else "Starting…", announcer.ready)
+            CheckRow(Icons.Filled.MusicNote, "Media Volume", if (volumeZero) "Volume is 0 – voice can't be heard" else "OK (voice uses media volume)", !volumeZero)
+            CheckRow(Icons.Filled.Fullscreen, "Big Payment Pop-up",
+                if (overlay) "Shows over other apps and lock screen" else "Only while Payvoro is open – tap to allow", overlay) {
+                runCatching { ctx.startActivity(Perms.overlaySettings(ctx)) }
+            }
+            CheckRow(Icons.Filled.Notifications, "Small Pop-up (notification)",
+                when { !notif -> "Blocked – tap to allow"; !headsUp -> "Silent – set Payment alerts to 'Pop on screen'"; else -> "On" },
+                notif && headsUp) {
+                runCatching {
+                    ctx.startActivity(android.content.Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, ctx.packageName))
+                }.onFailure { runCatching { ctx.startActivity(Perms.appInfo(ctx)) } }
+            }
             CheckRow(Icons.Filled.BatteryChargingFull, "Battery Optimization", if (battery) "Unrestricted" else "May stop in background", battery)
             CheckRow(Icons.Filled.Cloud, "Backend Server",
                 if (com.payvoro.app.service.Api.demo) "Demo mode (no server)" else when (server) { null -> "Checking…"; true -> "Connected"; false -> "Not reachable" }, server != false)
@@ -283,16 +305,59 @@ fun StatusScreen(onBack: () -> Unit) {
                 else if (prefs.canAnnounce()) "Expired – renew within 3 days" else "Expired – voice is off",
                 prefs.planActive())
         }
-        Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.padding(top = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = { Perms.rebindListener(ctx); tick++ }, modifier = Modifier.weight(1f)) { Text("Recheck Status") }
             Button(onClick = { announcer.test() }, modifier = Modifier.weight(1f)) { Text("Test Sound") }
         }
+
+        // Pop-up test: opens after 5 seconds, so the merchant can press Home (or lock the phone)
+        // and see that it really shows over other apps / the lock screen.
+        Text("Test Pop-up", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 16.dp, bottom = 4.dp))
+        Text("Tap, then press Home or lock the phone. The pop-up opens in 5 seconds.", color = TextGray, fontSize = 12.sp)
+        Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            listOf(true to "Received ✓", false to "Failed ✗").forEach { (ok, label) ->
+                Button(
+                    onClick = {
+                        Toast.makeText(ctx, "Pop-up in 5 seconds…", Toast.LENGTH_SHORT).show()
+                        val app = ctx.applicationContext
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ PaymentPopup.test(app, ok) }, 5_000)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (ok) Green else Red),
+                    modifier = Modifier.weight(1f)
+                ) { Text(label) }
+            }
+        }
+
+        // What happened to each payment notification, and why
+        Row(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Recent activity", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            if (log.isNotEmpty()) TextButton(onClick = { EventLog.clear(ctx) }) { Text("Clear") }
+        }
+        WhiteCard(Modifier.fillMaxWidth()) {
+            if (log.isEmpty()) Text("Nothing yet. Send ₹1 to your QR, then check here.", color = TextGray, fontSize = 13.sp)
+            log.forEachIndexed { i, line ->
+                if (i > 0) HorizontalDivider(Modifier.padding(vertical = 6.dp), color = PurpleLight)
+                Text(line, fontSize = 12.sp, lineHeight = 16.sp,
+                    color = if (logIsProblem(line)) Red else Color(0xFF111827))
+            }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 
+/** Lines that need the merchant to do something are shown in red. */
+private fun logIsProblem(line: String): Boolean {
+    val l = line.lowercase()
+    return listOf(" no voice", "not shown", "blocked", "is 0", "error", "failed", "did not start", "stopped", "silent", "disconnected", "paused", "is off", "not logged")
+        .any { it in l } && "test pop-up" !in l
+}
+
 @Composable
-private fun CheckRow(icon: ImageVector, title: String, sub: String, ok: Boolean) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun CheckRow(icon: ImageVector, title: String, sub: String, ok: Boolean, onFix: (() -> Unit)? = null) {
+    Row(
+        Modifier.fillMaxWidth().then(if (!ok && onFix != null) Modifier.clickable(onClick = onFix) else Modifier).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Icon(icon, null, tint = Purple)
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)

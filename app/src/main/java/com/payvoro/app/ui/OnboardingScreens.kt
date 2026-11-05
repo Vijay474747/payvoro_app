@@ -87,6 +87,7 @@ fun PermissionScreen(onDone: () -> Unit) {
     val listenerOn = remember(tick) { Perms.listenerEnabled(ctx) }
     val notifOn = remember(tick) { Perms.notificationsAllowed(ctx) }
     val batteryOn = remember(tick) { Perms.batteryIgnored(ctx) }
+    val overlayOn = remember(tick) { Perms.canOverlay(ctx) }
     val notifLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { tick++ }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
@@ -105,9 +106,22 @@ fun PermissionScreen(onDone: () -> Unit) {
             "Recommended", notifOn, "Allow") {
             if (Build.VERSION.SDK_INT >= 33) notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        PermissionCard(Icons.Filled.Fullscreen, "Display over other apps", "Big green payment screen when Payvoro is closed, even on the lock screen",
+            "Recommended", overlayOn, "Allow") {
+            runCatching { ctx.startActivity(Perms.overlaySettings(ctx)) }
+                .onFailure { runCatching { ctx.startActivity(Perms.appInfo(ctx)) } }
+        }
         PermissionCard(Icons.Filled.BatteryChargingFull, "Battery Optimization", "Keep app running in background",
             "Recommended", batteryOn, "Allow") {
             ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+        if (Perms.isXiaomi()) {
+            // Xiaomi can't tell apps if these are on, so there is no "Done" tick – the button always shows.
+            PermissionCard(Icons.Filled.PhonelinkLock, "Xiaomi / Redmi / POCO", "Turn ON \"Show on Lock screen\" and \"Display pop-up windows while running in the background\"",
+                "Recommended", false, "Open") {
+                runCatching { ctx.startActivity(Perms.xiaomiPermissions(ctx)) }
+                    .onFailure { runCatching { ctx.startActivity(Perms.appInfo(ctx)) } }
+            }
         }
 
         Text(

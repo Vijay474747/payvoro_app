@@ -5,6 +5,10 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Big payment pop-up over other apps / lock screen when Payvoro is closed (merchant allows it in Settings) -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Android 7 needs a short vibration to show the notification pop-up at the top -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Needed (Android 11+) to check which UPI apps are installed -->
@@ -49,6 +53,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Big green / red payment pop-up. Own task, so closing it goes back to whatever app was open. -->
+        <activity
+            android:name=".ui.PaymentAlertActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.payvoro.app.alert"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:theme="@android:style/Theme.Material.NoActionBar" />
 
         <!-- The heart of the app: reads payment notifications from UPI apps -->
         <service

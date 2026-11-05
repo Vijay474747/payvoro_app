@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
+import autopay_sync
 import core
 import legal_pages
 from admin_page import ADMIN_HTML, HOME_HTML
@@ -26,7 +27,7 @@ from core import AppError
 log = logging.getLogger("payvoro")
 ADMIN_KEY = os.getenv("PAYVORO_ADMIN_KEY", "")
 
-app = FastAPI(title="Payvoro Server", version="4.0.0")
+app = FastAPI(title="Payvoro Server", version="4.2.0")
 
 _db_ready = False
 
@@ -120,9 +121,43 @@ class MerchantIn(BaseModel):
 
 
 class MerchantUpdate(BaseModel):
+    """Stop / start, edit shop details, private notes, message shown in this merchant's app.
+    (The plan dropdown and "+1 month" were removed from the admin page – use free days with a reason.)"""
     active: Optional[bool] = None
-    extend_months: Optional[int] = Field(default=None, ge=1, le=36)
-    plan: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=60)
+    email: Optional[str] = Field(default=None, max_length=120)
+    phone: Optional[str] = Field(default=None, max_length=20)
+    upi_id: Optional[str] = Field(default=None, max_length=120)
+    city: Optional[str] = Field(default=None, max_length=60)
+    notes: Optional[str] = Field(default=None, max_length=1000)
+    message: Optional[str] = Field(default=None, max_length=1000)
+
+
+class DaysIn(BaseModel):
+    days: int = Field(ge=1, le=90)
+    reason: str = Field(min_length=3, max_length=200)
+
+
+class ReasonIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
+class BulkIn(BaseModel):
+    ids: List[int] = Field(min_length=1, max_length=1000)
+    action: str
+
+
+class NoticeIn(BaseModel):
+    text: str = Field(default="", max_length=500)
+
+
+class LinkAutopayIn(BaseModel):
+    rzp_sub_id: str = Field(min_length=5, max_length=60)
+    merchant_id: int
+
+
+class IgnoreAutopayIn(BaseModel):
+    rzp_sub_id: str = Field(min_length=5, max_length=60)
 
 
 # ---------- app API ----------
@@ -182,7 +217,10 @@ def logout(token: str = Depends(bearer)):
 
 @app.get("/api/me")
 def me(m=Depends(current_merchant)):
-    return core.public_merchant(m)
+    # Waiting for AutoPay (or a charge is due)? Ask Razorpay now, so it is verified without the webhook.
+    m = autopay_sync.maybe_autocheck(m)
+    # "notice": message for this merchant + notice for everyone, shown on the app's Home screen
+    return {**core.public_merchant(m), "notice": core.app_notice_for(m)}
 
 
 @app.patch("/api/me")
@@ -220,6 +258,19 @@ async def razorpay_webhook(request: Request, x_razorpay_signature: str = Header(
     return core.handle_razorpay_webhook(await request.body(), x_razorpay_signature, x_razorpay_event_id)
 
 
+@app.get("/api/cron/autopay-sync")
+def cron_autopay_sync(authorization: str = Header(""), x_admin_key: str = Header("")):
+    """Daily AutoPay check (Vercel Cron, see vercel.json). Vercel sends "Authorization: Bearer <CRON_SECRET>"."""
+    secret = os.getenv("CRON_SECRET", "")
+    ok = (secret and secrets.compare_digest(authorization.encode(), f"Bearer {secret}".encode())) or \
+         (ADMIN_KEY and x_admin_key and secrets.compare_digest(x_admin_key.encode(), ADMIN_KEY.encode()))
+    if not ok:
+        raise HTTPException(401, "Not allowed")
+    if not core.razorpay_ready():
+        return {"skipped": "Razorpay API keys are not set"}
+    return autopay_sync.sync(days=45, source="daily")
+
+
 @app.get("/pay/done", response_class=HTMLResponse)
 def pay_done():
     return ("<html><body style='font-family:sans-serif;text-align:center;padding:40px'>"
@@ -240,6 +291,11 @@ def dashboard(request: Request):
         "pending": core.admin_list_subscriptions("pending", "manual"),
         "recent": core.admin_list_subscriptions(limit=12),
         "webhook_url": base + "/api/razorpay/webhook",
+        "charts": core.admin_charts(),
+        "log": core.admin_recent_log(40),
+        "notice": core.get_notice(),
+        "autopay_sync": autopay_sync.last_sync(),
+        "unmatched": autopay_sync.list_unmatched(),
     }
 
 
@@ -263,10 +319,80 @@ def create_merchant(body: MerchantIn):
     return core.admin_create_merchant(body.name, body.email, body.phone, body.upi_id, body.city, body.plan, body.months)
 
 
+@app.get("/admin/merchants/{mid}", dependencies=[Depends(admin_only)])
+def merchant_detail(mid: int):
+    return core.admin_merchant_detail(mid)
+
+
 @app.patch("/admin/merchants/{mid}", dependencies=[Depends(admin_only)])
 def update_merchant(mid: int, body: MerchantUpdate):
-    core.admin_update_merchant(mid, body.active, body.extend_months, body.plan)
+    if body.active is not None:
+        core.admin_update_merchant(mid, body.active, None, None)
+    fields = body.model_dump(exclude={"active"}, exclude_none=True)
+    return core.admin_edit_merchant(mid, fields) if fields else core.admin_merchant_detail(mid)
+
+
+@app.delete("/admin/merchants/{mid}", dependencies=[Depends(admin_only)])
+def delete_merchant(mid: int):
+    core.admin_delete_merchant(mid)
     return {"ok": True}
+
+
+@app.post("/admin/merchants/{mid}/free-days", dependencies=[Depends(admin_only)])
+def free_days(mid: int, body: DaysIn):
+    return core.admin_give_days(mid, body.days, body.reason)
+
+
+@app.post("/admin/merchants/{mid}/end-plan", dependencies=[Depends(admin_only)])
+def end_plan(mid: int, body: ReasonIn):
+    return core.admin_end_plan(mid, body.reason)
+
+
+@app.post("/admin/merchants/{mid}/logout", dependencies=[Depends(admin_only)])
+def logout_devices(mid: int):
+    return {"logged_out": core.admin_logout_devices(mid)}
+
+
+@app.post("/admin/bulk", dependencies=[Depends(admin_only)])
+def bulk(body: BulkIn):
+    return {"done": core.admin_bulk(body.ids, body.action)}
+
+
+@app.put("/admin/notice", dependencies=[Depends(admin_only)])
+def set_notice(body: NoticeIn):
+    return {"notice": core.admin_set_notice(body.text)}
+
+
+# ---------- AutoPay check with Razorpay ----------
+@app.post("/admin/autopay/sync", dependencies=[Depends(admin_only)])
+def admin_autopay_sync(days: int = 45):
+    return autopay_sync.sync(days=max(1, min(days, 365)), source="admin")
+
+
+@app.post("/admin/merchants/{mid}/autopay-check", dependencies=[Depends(admin_only)])
+def admin_autopay_check(mid: int):
+    report = autopay_sync.sync(merchant_id=mid, days=90, source="admin")
+    return {"report": report, **core.admin_merchant_detail(mid)}
+
+
+@app.post("/admin/merchants/{mid}/cancel-autopay", dependencies=[Depends(admin_only)])
+def admin_cancel_autopay(mid: int, body: ReasonIn):
+    return autopay_sync.cancel_merchant_autopay(mid, body.reason)
+
+
+@app.post("/admin/autopay/link", dependencies=[Depends(admin_only)])
+def admin_link_autopay(body: LinkAutopayIn):
+    return autopay_sync.link_unmatched(body.rzp_sub_id, body.merchant_id)
+
+
+@app.post("/admin/autopay/ignore", dependencies=[Depends(admin_only)])
+def admin_ignore_autopay(body: IgnoreAutopayIn):
+    return autopay_sync.ignore_unmatched(body.rzp_sub_id)
+
+
+@app.get("/admin/log", dependencies=[Depends(admin_only)])
+def admin_log(limit: int = 100):
+    return core.admin_recent_log(limit)
 
 
 

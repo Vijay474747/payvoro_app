@@ -40,6 +40,7 @@ fun HomeScreen(nav: NavController) {
     var tick by remember { mutableIntStateOf(0) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
     val listenerOn = remember(tick) { Perms.listenerEnabled(ctx) }
+    val overlayOn = remember(tick) { Perms.canOverlay(ctx) }
 
     val ok = all.filter { it.status == SUCCESS }
     val today = ok.filter { it.timestamp >= startOfDay() }
@@ -105,6 +106,14 @@ fun HomeScreen(nav: NavController) {
                 color = Red, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
                 modifier = Modifier.fillMaxWidth().padding(16.dp).clip(RoundedCornerShape(12.dp))
                     .background(Red.copy(alpha = 0.08f)).clickable { nav.navigate("permissions_again") }.padding(12.dp)
+            )
+        }
+        if (listenerOn && !overlayOn) item {
+            Text(
+                "Allow \"Display over other apps\" to see the big payment screen when Payvoro is closed. Tap here.",
+                color = PurpleDark, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp).clip(RoundedCornerShape(12.dp))
+                    .background(PurpleLight).clickable { nav.navigate("permissions_again") }.padding(12.dp)
             )
         }
 

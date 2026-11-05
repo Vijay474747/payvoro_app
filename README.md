@@ -5,6 +5,36 @@ When a customer pays by GPay / PhonePe / Paytm / BHIM / bank UPI, the phone says
 **"500 ரூபாய் பெறப்பட்டது"** (Tamil, English or Hindi) and shows a big green screen.
 On the Plus plan it also says the customer's name.
 
+## What is new in server v4.2 (admin page + automatic AutoPay check)
+
+| # | Change |
+|---|---|
+| 1 | **Plan dropdown and "+1 month" removed** from the admin page (and from "Add merchant"). A plan changes only by Razorpay AutoPay, or by **free days with a written reason** (Manage → Plan & AutoPay). Every change is in the Activity log. (The old buttons on the live page did nothing any more – the server stopped accepting them.) |
+| 2 | **AutoPay is verified automatically from Razorpay** – no webhook needed, no approving by hand: (a) when the merchant opens the app after setting AutoPay, the server asks Razorpay at once; (b) every night at 2 AM (Vercel Cron) all AutoPays are checked; (c) "Check AutoPay now" on the admin page. The webhook still works and is the fastest. Needs `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET`. |
+| 3 | **Matching** an AutoPay made on your rzp.io link to a shop: by **email**, then **mobile number**, then **UPI ID** (from the subscription, the Razorpay customer and the payment). Before, only the exact Google email worked. |
+| 4 | **"AutoPays that match no shop"** list: pick the shop once (Link) or Ignore. |
+| 5 | Every monthly AutoPay charge is read from Razorpay (no double counting) and extends the plan to the end of the paid month. A failed charge (pending / halted) shows in red. |
+| 6 | (v4.3: replaced by a simpler dark design – see "Admin dashboard" below.) New admin page with tabs: **Overview** (8 numbers, "Needs your attention", income and new-shop charts), **Users** (search, sort, plan and smart filters – AutoPay on / failed / ending in 3 days / online / not set up / has notes, select many → Check AutoPay / Log out phones / Start / Stop, **Export CSV**), **AutoPay**, **Messages** (notice to every app), **Activity** log, **Setup**. |
+| 7 | **Manage** window per shop: Overview (phones logged in, money paid), Edit details, Plan & AutoPay (check with Razorpay, give free days, end plan, **cancel AutoPay**, log out phones, delete test shops), Message shown in their app + private notes, History, Log. |
+
+**After deploying, set on Vercel:** `CRON_SECRET` = any long random text (for the nightly check), and make sure
+`RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` are set. Then Redeploy. The cron is already in `backend/vercel.json`.
+
+## What is new in v1.0.2 (pop-up + "not reading" fixes)
+
+| # | Change |
+|---|---|
+| 1 | **Big pop-up works when Payvoro is closed.** The green / red payment screen is now its own screen. It opens over other apps and over the lock screen, and turns the screen on. Before, it showed only while Payvoro was open. Needs **Display over other apps** (new card on the Permissions page). Xiaomi / Redmi / POCO also need "Show on Lock screen" and "Display pop-up windows while running in the background" (button on the Permissions page). |
+| 2 | **New pop-up design** like the reference image: confetti, white amount card, tick / cross, payer name, app + time, sound box with moving sound waves. |
+| 3 | **Small pop-up (notification) always shows**, on a new channel `payment_alerts_v2` (the old `payments` channel is deleted – Android never lets an app raise an old channel back to "pop on screen"). Own white status-bar icon. Short vibration on Android 7 (needed for a pop-up there). |
+| 4 | **Test Pop-up** buttons on Live Status (Received ✓ / Failed ✗). Opens after 5 seconds, so you can press Home or lock the phone first. |
+| 5 | **Recent activity log** on Live Status: what happened to each payment notification and why ("Saved ₹10 – speaking", "NO voice: no active plan", "Not a payment text: …", "Big pop-up not shown – allow Display over other apps", "Media volume is 0"). |
+| 6 | **Listener reconnects** every time Payvoro is opened (Android sometimes leaves it disconnected after an update). |
+| 7 | **Word filter fixed:** only whole words block a payment. Payer "Hemitha" / "Premium Stores" (has "emi"), UPI ID "freedom@oksbi" (has "free") were silently ignored. "Paid to your bank account" is incoming, not outgoing. |
+| 8 | **Voice engine restarts itself** if the phone's text-to-speech stops. An error in one notification can no longer stop the listener. |
+
+`versionCode` is now **3** (Play needs a higher number for every upload).
+
 ## What is new in v2.1 (Razorpay review)
 
 | # | Change |
@@ -65,7 +95,9 @@ payvoro/
     ├── core.py               logic: Google login, plans, AutoPay, prices, payments (tested)
     ├── database.py           Neon Postgres on Vercel, SQLite file on your PC
     ├── main.py               web routes (Vercel finds the "app" here by itself)
-    ├── admin_page.py         admin dashboard (/admin) + home page (/)
+    ├── admin_html.py         admin dashboard (/admin)
+    ├── admin_page.py         home page (/)
+    ├── autopay_sync.py       AutoPay check straight from Razorpay (app open, nightly cron, admin button)
     ├── migrate_sqlite_to_postgres.py   copy an old payvoro.db into Neon (once)
     ├── vercel.json           region: Singapore (sin1), close to India
     ├── test_core.py
@@ -92,7 +124,8 @@ This adds `DATABASE_URL` for you. The tables are made by themselves on the first
 | `GOOGLE_WEB_CLIENT_ID` | Google Web client ID (same as in the app) |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Razorpay → Account & Settings → API Keys (start with `rzp_test_…`) |
 | `RAZORPAY_WEBHOOK_SECRET` | any secret word – type the same in Razorpay webhooks |
-| `RAZORPAY_PLAN_BASIC` / `RAZORPAY_PLAN_PLUS` | optional – leave empty, the admin page can make the plans |
+| `RAZORPAY_PLAN_BASIC` | optional – Razorpay plan ID (₹30 monthly). Then the server makes each AutoPay with the shop inside (best match) |
+| `CRON_SECRET` | any long random text – Vercel Cron uses it for the nightly AutoPay check |
 
 Do **not** set `PAYVORO_DEV` on Vercel. Then **Deployments → ⋯ → Redeploy** so the new values are used.
 
@@ -117,15 +150,13 @@ Secret = `RAZORPAY_WEBHOOK_SECRET`, events = all `subscription.*` events listed 
 
 ### Admin dashboard (`/admin`)
 
-- **Top numbers:** total users, paying, free trial, AutoPay on (and failed), monthly income, all shops' sales today.
-- **Users by plan:** Basic / Plus / Free trial / Expired / No plan / Stopped – tap one to filter the list.
-- **Plans & AutoPay amount:** change the monthly price. The app shows the new per-day price at once.
-  New merchants pay the new amount. Merchants already on AutoPay keep their old amount
-  (Razorpay can't change a running AutoPay). Their webhooks are still recognised.
-- **Razorpay & server setup:** green/red checklist (database, API keys, webhook, Google login, test mode).
-- **Users list:** search, plan, AutoPay status and amount, plan end date, sales, last seen,
-  History (AutoPay + customer payments), +1 month, change plan, Stop/Start.
-- Pay-by-link approvals, latest AutoPay activity, Add merchant.
+v4.3 design: **dark dashboard with a side menu** (bottom menu on a phone). Four pages only:
+- **Home** – monthly income, total shops, AutoPay on, needs attention; income chart, new-shops chart, plans chart.
+- **Shops** – simple list (shop, plan, AutoPay, plan until, last seen, Stop/Start) with search and one filter.
+  Tap a shop → **detail panel**: plan, AutoPay (Check with Razorpay), money paid, edit details, give free days with a reason, payments, history.
+- **AutoPay** – automatic Razorpay check (button + last result), AutoPays with no shop (Link / Ignore), pay-by-link approvals.
+- **Setup** – server checklist and the plan.
+There is no plan dropdown and no "+1 month".
 
 ## Google login with Firebase (step by step)
 
@@ -330,10 +361,10 @@ If AutoPay fails (low balance), voice keeps working for 3 more days, then stops 
 
 ### Admin page – `https://YOUR_SERVER/admin`
 
+- AutoPay verified automatically from Razorpay (app open, nightly, or "Check AutoPay now"); unmatched AutoPays → Link / Ignore
 - "Pay by link" payments waiting → Approve (+30 days) / Reject
 - Add merchant by **Google email** (they then just log in with that Google account)
-- Each shop: plan, trial, AutoPay status, today/month totals, last seen, plan expiry, +1 month, change plan, stop
-- Monthly income (active Basic × 30 + Plus × 60, trials not counted)
+- Manage each shop: edit, free days with a reason, end plan, cancel AutoPay, app message, private notes, history, log
 
 ### Tests
 

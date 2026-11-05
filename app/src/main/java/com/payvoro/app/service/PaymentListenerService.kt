@@ -8,6 +8,7 @@ import android.service.notification.StatusBarNotification
 import com.payvoro.app.AppState
 import com.payvoro.app.PayvoroApp
 import com.payvoro.app.data.*
+import com.payvoro.app.ui.rupees
 import kotlinx.coroutines.*
 
 /**
@@ -24,7 +25,10 @@ import kotlinx.coroutines.*
  *     → NOT announced. Shown in "UPI App Selection" so the merchant can trust it once.
  */
 class PaymentListenerService : NotificationListenerService() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // An error in one payment must never stop the listener (or crash the app).
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e ->
+        EventLog.add(applicationContext, "Error while saving a payment: ${e.javaClass.simpleName} ${e.message.orEmpty()}")
+    })
 
     companion object {
         private const val STALE_MS = 10 * 60_000L          // app alerts older than this are re-posts (after reboot etc.)
@@ -32,31 +36,51 @@ class PaymentListenerService : NotificationListenerService() {
         private const val BANK_FIRST_MS = 30 * 60_000L     // app alert arriving after a bank SMS
     }
 
-    override fun onListenerConnected() { AppState.listenerConnected.value = true }
+    override fun onListenerConnected() {
+        AppState.listenerConnected.value = true
+        EventLog.add(this, "Listener connected – reading payment notifications")
+    }
 
     override fun onListenerDisconnected() {
         AppState.listenerConnected.value = false
-        requestRebind(ComponentName(this, PaymentListenerService::class.java))
+        EventLog.add(this, "Listener disconnected by Android – asking to reconnect")
+        runCatching { requestRebind(ComponentName(this, PaymentListenerService::class.java)) }
     }
 
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
+        try {
+            onPosted(sbn)
+        } catch (e: Throwable) {
+            EventLog.add(this, "Error reading a notification from ${sbn.packageName}: ${e.javaClass.simpleName} ${e.message.orEmpty()}")
+        }
+    }
+
+    private fun onPosted(sbn: StatusBarNotification) {
         val prefs = Prefs(this)
-        if (!prefs.loggedIn || !prefs.soundBoxActive) return
         val n = sbn.notification ?: return
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = n.extras ?: return
 
         val app = UpiApps.forPackage(sbn.packageName) ?: prefs.customAppFor(sbn.packageName)
+        // Only payment apps are written to the log (never the merchant's chats or personal SMS).
+        val name = app?.let { UpiApps.name(it.id) }
+        if (!prefs.loggedIn) { if (app != null && app.id != "bank") EventLog.add(this, "$name alert ignored – not logged in"); return }
+        if (!prefs.soundBoxActive) { if (app != null && app.id != "bank") EventLog.add(this, "$name alert ignored – Sound Box is paused on Home"); return }
+
         when {
             app == null -> learnUnknownApp(sbn, extras, prefs)
             app.id == "bank" -> if (prefs.isAppEnabled("bank")) handleBankSms(sbn, extras, prefs)
             else -> {
-                if (!app.id.startsWith("other:") && !prefs.isAppEnabled(app.id)) return
+                if (!app.id.startsWith("other:") && !prefs.isAppEnabled(app.id)) {
+                    EventLog.add(this, "$name alert ignored – $name is OFF in UPI App Selection"); return
+                }
                 val shownAt = if (n.`when` > 0) n.`when` else sbn.postTime
-                if (System.currentTimeMillis() - shownAt > STALE_MS) return
+                if (System.currentTimeMillis() - shownAt > STALE_MS) {
+                    EventLog.add(this, "$name alert ignored – old notification shown again"); return
+                }
                 handleUpiApp(app.id, sbn, extras, prefs)
             }
         }
@@ -66,14 +90,22 @@ class PaymentListenerService : NotificationListenerService() {
     private fun handleUpiApp(appId: String, sbn: StatusBarNotification, extras: Bundle, prefs: Prefs) {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty()
         val text = bodyText(extras)
-        val parsed = NotificationParser.parse(title, text) ?: return
-        if (DuplicateGuard.isDuplicate(appId, parsed.amount, parsed.payer, sbn.postTime)) return
+        val name = UpiApps.name(appId)
+        val parsed = NotificationParser.parse(title, text)
+        if (parsed == null) {
+            EventLog.add(this, "$name: not a payment text: \"$title | $text\"".take(160)); return
+        }
+        if (DuplicateGuard.isDuplicate(appId, parsed.amount, parsed.payer, sbn.postTime)) {
+            EventLog.add(this, "$name: same alert again – ignored ${rupees(parsed.amount)}"); return
+        }
         val utr = BankSmsFilter.extractUtr("$title $text")
 
         scope.launch {
             val dao = AppDatabase.get(this@PaymentListenerService).payments()
             val sameUtr = utr?.let { dao.findByUtr(it) }
-            if (sameUtr != null && sameUtr.source == SOURCE_APP) return@launch      // already have it
+            if (sameUtr != null && sameUtr.source == SOURCE_APP) {                   // already have it
+                EventLog.add(this@PaymentListenerService, "$name: same UPI ref already saved – ignored"); return@launch
+            }
 
             // Did the bank SMS arrive first? Then upgrade that record instead of adding a second one.
             val bankFirst = sameUtr
@@ -91,11 +123,12 @@ class PaymentListenerService : NotificationListenerService() {
                     dedupeKey = utr ?: "${sbn.packageName}|${parsed.amount}|${(title + text).hashCode()}|${sbn.postTime / 120_000}",
                 )
                 val id = dao.insert(p)
-                if (id <= 0) return@launch
+                if (id <= 0) { EventLog.add(this@PaymentListenerService, "$name: already saved – ignored"); return@launch }
                 saved = p.copy(id = id)
                 alreadySpoken = false
             }
-            if (!alreadySpoken) alert(saved, prefs)
+            if (alreadySpoken) EventLog.add(this@PaymentListenerService, "$name: matched the earlier bank SMS (already spoken)")
+            else alert(saved, prefs)
             BackendSync.syncPending(this@PaymentListenerService)
         }
     }
@@ -110,6 +143,7 @@ class PaymentListenerService : NotificationListenerService() {
 
         if (!BankSmsFilter.isTrusted(header.brand, prefs.trustedSenders())) {
             prefs.addCandidateSender(header.brand, text)            // merchant can trust it once
+            EventLog.add(this, "Bank SMS ${rupees(credit.amount)} from ${header.brand} – not trusted yet (UPI App Selection)")
             return
         }
 
@@ -123,6 +157,7 @@ class PaymentListenerService : NotificationListenerService() {
                 ?: dao.findAppPaymentToConfirm(credit.amount, sbn.postTime - BANK_MATCH_MS, sbn.postTime + 60_000)
             if (match != null) {
                 dao.confirmByBank(match.id, credit.utr)
+                EventLog.add(this@PaymentListenerService, "Bank SMS ${rupees(credit.amount)} matched an earlier app alert")
                 BackendSync.syncPending(this@PaymentListenerService)
                 return@launch
             }
@@ -137,6 +172,7 @@ class PaymentListenerService : NotificationListenerService() {
             val id = dao.insert(p)
             if (id <= 0) return@launch
             if (prefs.announceBankSms) alert(p.copy(id = id), prefs)
+            else EventLog.add(this@PaymentListenerService, "Bank SMS ${rupees(credit.amount)} saved – voice for bank SMS is off")
             BackendSync.syncPending(this@PaymentListenerService)
         }
     }
@@ -152,20 +188,28 @@ class PaymentListenerService : NotificationListenerService() {
         val label = runCatching {
             packageManager.getApplicationLabel(packageManager.getApplicationInfo(sbn.packageName, 0)).toString()
         }.getOrDefault(sbn.packageName)
+        if (prefs.candidateApps().none { it.first == sbn.packageName })
+            EventLog.add(this, "New payment app seen: $label – trust it in UPI App Selection")
         prefs.addCandidateApp(sbn.packageName, label)
     }
 
     // ---------------- helpers ----------------
     private suspend fun alert(p: Payment, prefs: Prefs) = withContext(Dispatchers.Main) {
-        // Payment is always saved. Voice only while the plan (+3 grace days) is valid.
-        if (prefs.canAnnounce()) {
-            val announcer = (application as PayvoroApp).announcer
-            // Name only from UPI app alerts (bank SMS gives a UPI ID, not a name). Not spoken any more – see SoundAnnouncer.
-            val payer = if (p.source == SOURCE_APP) p.payer else null
-            if (p.status == SUCCESS) announcer.announce(p.amount, payer) else announcer.announceFailed(p.amount)
+        // Payment is always saved. Voice + big pop-up only while the plan (+3 grace days) is valid.
+        val planOk = prefs.canAnnounce()
+        val announcer = (application as PayvoroApp).announcer
+        val what = "Saved ${rupees(p.amount)} from ${UpiApps.name(p.app)}"
+        when {
+            !planOk -> EventLog.add(this@PaymentListenerService, "$what – NO voice: no active plan")
+            !prefs.soundOn -> EventLog.add(this@PaymentListenerService, "$what – NO voice: Voice alert is OFF in Profile")
+            else -> {
+                EventLog.add(this@PaymentListenerService, "$what – speaking" + if (announcer.ready) "" else " (voice engine starting)")
+                if (Perms.mediaVolumeZero(this@PaymentListenerService))
+                    EventLog.add(this@PaymentListenerService, "Media volume is 0 – the voice cannot be heard")
+                if (p.status == SUCCESS) announcer.announce(p.amount) else announcer.announceFailed(p.amount)
+            }
         }
-        if (prefs.canAnnounce() && AppState.isAppInForeground()) AppState.events.tryEmit(p)
-        else NotificationHelper.show(this@PaymentListenerService, p)
+        PaymentPopup.show(this@PaymentListenerService, p, bigPopup = planOk)
     }
 
     /** Latest message text. SMS apps use MessagingStyle, so read the last message first. */
